@@ -14,3 +14,11 @@ backup-*.tar.gz
 # OS
 .DS_Store
 Thumbs.db
+
+# Directories
+.agents/
+.codegraph/
+.specify/
+docs/.agents/
+docs/openspec/
+
