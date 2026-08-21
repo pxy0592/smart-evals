@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ===============================================
-# KnowFlow Eval - 备份脚本
+# Smart Eval - 备份脚本
 # ===============================================
 
 set -e
@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}================================================${NC}"
-echo -e "${GREEN}  KnowFlow Eval - 备份脚本${NC}"
+echo -e "${GREEN}  Smart Eval - 备份脚本${NC}"
 echo -e "${GREEN}================================================${NC}"
 echo ""
 
@@ -46,7 +46,7 @@ echo ""
 # 清理旧备份（保留最近 7 个）
 echo "清理旧备份（保留最近 7 个）..."
 cd "$BACKUP_DIR"
-ls -t knowflow-eval-backup-*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
+ls -t smart-eval-backup-*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm -f
 cd ..
 
 echo -e "${GREEN}✓ 清理完成${NC}"

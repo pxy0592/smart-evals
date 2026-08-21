@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 KnowFlow Eval 的关注！
+感谢你对 Smart Eval 的关注！
 
 ## 问题反馈
 
@@ -124,12 +124,12 @@
 
 ## 联系方式
 
-- GitHub Issues: https://github.com/KnowFlowRAG/KnowEval/issues
-- 讨论区: https://github.com/KnowFlowRAG/KnowEval/discussions
+- GitHub Issues: https://github.com/pxy0592/smart-evals/issues
+- 讨论区: https://github.com/pxy0592/smart-evals/discussions
 
 ## 致谢
 
-感谢所有贡献者！你的帮助让 KnowFlow Eval 变得更好。
+感谢所有贡献者！你的帮助让 smart Eval 变得更好。
 
 ---
 

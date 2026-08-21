@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is the deployment package for KnowFlow Eval, not the primary application source tree. Root-level files define the container and operator workflow: `docker-compose.yml`, `Dockerfile`, `.env.example`, and the maintenance scripts (`start.sh`, `stop.sh`, `update.sh`, and `backup.sh`). User-facing documentation lives in `README.md`, `QUICKSTART.md`, `CHANGELOG.md`, and `RELEASE_CHECKLIST.md`. Screenshots used by the documentation are stored in `images/`. Runtime state belongs in ignored directories such as `data/`, `logs/`, `tmp/`, and `backups/`; never commit their contents.
+This repository is the deployment package for Smart Eval, not the primary application source tree. Root-level files define the container and operator workflow: `docker-compose.yml`, `Dockerfile`, `.env.example`, and the maintenance scripts (`start.sh`, `stop.sh`, `update.sh`, and `backup.sh`). User-facing documentation lives in `README.md`, `QUICKSTART.md`, `CHANGELOG.md`, and `RELEASE_CHECKLIST.md`. Screenshots used by the documentation are stored in `images/`. Runtime state belongs in ignored directories such as `data/`, `logs/`, `tmp/`, and `backups/`; never commit their contents.
 
 ## Build, Test, and Development Commands
 

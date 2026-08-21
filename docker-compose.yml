@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  knowflow-eval:
+  smart-eval:
     image: zxwei/knowflow-eval:latest
-    container_name: knowflow-eval
+    container_name: smart-eval
     restart: unless-stopped
 
     ports:
@@ -28,7 +28,7 @@ services:
       start_period: 40s
 
     networks:
-      - knowflow-network
+      - smart-network
 
     logging:
       driver: "json-file"
@@ -37,5 +37,5 @@ services:
         max-file: "3"
 
 networks:
-  knowflow-network:
+  smart-network:
     driver: "bridge"

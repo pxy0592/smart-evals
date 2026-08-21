@@ -45,7 +45,7 @@
 
 ### 6. 链接更新
 
-- [ ] README.md 中的仓库链接已更新为 KnowFlowRAG/KnowEval
+- [ ] README.md 中的仓库链接已更新为 pxy0592/smart-evals
 - [ ] README.md 中的邮箱已更新
 - [ ] GitHub Issues 链接正确
 - [ ] Docker Hub 链接正确
@@ -91,7 +91,7 @@ git init
 git add .
 
 # 首次提交
-git commit -m "Initial commit: KnowFlow Eval Docker Deployment v1.0.0
+git commit -m "Initial commit: Smart Eval Docker Deployment v1.0.0
 
 - Complete deployment documentation
 - Automated maintenance scripts
@@ -103,8 +103,8 @@ git commit -m "Initial commit: KnowFlow Eval Docker Deployment v1.0.0
 ### Step 3: 创建远程仓库
 
 在 GitHub 上创建新仓库：
-- 仓库名：`knowflow-eval-deploy`
-- 描述：`KnowFlow Eval - RAG 评估系统 Docker 部署`
+- 仓库名：`smart-eval-deploy`
+- 描述：`smart Eval - RAG 评估系统 Docker 部署`
 - 可见性：Public
 - **不要**勾选 Initialize with README（我们已有）
 
@@ -112,7 +112,7 @@ git commit -m "Initial commit: KnowFlow Eval Docker Deployment v1.0.0
 
 ```bash
 # 添加远程仓库
-git remote add origin https://github.com/KnowFlowRAG/KnowEval.git
+git remote add origin https://github.com/pxy0592/smart-evals.git
 
 # 推送到主分支
 git branch -M main
@@ -128,7 +128,7 @@ git push origin v1.0.0
 在 GitHub 仓库页面：
 
 1. **About** (点击仓库右侧的齿轮图标)
-   - Description: `KnowFlow Eval - RAG 评估系统 Docker 部署`
+   - Description: `Smart Eval - RAG 评估系统 Docker 部署`
    - Website: `https://hub.docker.com/r/zxwei/knowflow-eval`
    - Topics: `docker`, `rag`, `evaluation`, `llm`, `docker-compose`
 
@@ -157,9 +157,9 @@ git push origin v1.0.0
 在 README.md 顶部添加：
 
 ```markdown
-[![Docker Image](https://img.shields.io/badge/docker-zxwei%2Fknowflow--eval-blue)](https://hub.docker.com/r/zxwei/knowflow-eval)
-[![Docker Pulls](https://img.shields.io/docker/pulls/zxwei/knowflow-eval)](https://hub.docker.com/r/zxwei/knowflow-eval)
-[![GitHub release](https://img.shields.io/github/v/release/KnowFlowRAG/KnowEval)](https://github.com/KnowFlowRAG/KnowEval/releases)
+[![Docker Image](https://img.shields.io/badge/docker-pxy0592%2Fsmart--eval-blue)](https://hub.docker.com/r/pxy0592/smart-evals)
+[![Docker Pulls](https://img.shields.io/docker/pulls/pxy0592/smart-evals)](https://hub.docker.com/r/pxy0592/smart-evals)
+[![GitHub release](https://img.shields.io/github/v/release/pxy0592/smart-evals)](https://github.com/pxy0592/smart-evals/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ```
 
@@ -170,8 +170,8 @@ git push origin v1.0.0
 ```bash
 # 在新目录克隆仓库
 cd /tmp
-git clone https://github.com/KnowFlowRAG/KnowEval.git
-cd KnowEval
+git clone https://github.com/pxy0592RAG/smart-evals.git
+cd smart-evals
 
 # 测试部署流程
 cp .env.example .env

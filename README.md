@@ -54,8 +54,8 @@ rag-evaluation/
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/KnowFlowRAG/KnowEval.git
-cd KnowEval/docker-deploy
+git clone https://github.com/pxy0592/smart-evals.git
+cd smart-evals/docker-deploy
 
 # 2. 配置环境变量
 cp .env.example .env
@@ -94,11 +94,11 @@ docker-compose logs -f
 
 ```bash
 # 1. 修改代码后，构建新镜像
-cd KnowEval
-docker build -t your-username/knoweval:latest .
+cd smart-evals
+docker build -t your-username/smart-evals:latest .
 
 # 2. 修改 docker-compose.yml 中的镜像名
-# image: your-username/knoweval:latest
+# image: your-username/smart-evals:latest
 
 # 3. 启动服务
 cd docker-deploy
@@ -177,7 +177,7 @@ docker-compose down
 docker-compose up -d --build
 
 # 进入容器调试
-docker-compose exec knowflow-eval bash
+docker-compose exec smart-eval bash
 ```
 
 更多 Docker 部署详情，请参考：[Docker 部署文档](docker-deploy/README.md)
@@ -406,8 +406,8 @@ JSON 格式示例：
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/KnowFlowRAG/KnowEval.git
-cd KnowEval/docker-deploy
+git clone https://github.com/pxy0592/smart-evals.git
+cd smart-evals/docker-deploy
 
 # 2. 配置环境变量（必需）
 cp .env.example .env
@@ -434,7 +434,7 @@ cp .env.example .env
 #### 自动安装脚本
 
 ```bash
-cd KnowEval
+cd smart-evals
 ./install.sh  # 自动安装所有依赖
 
 # 启动系统
@@ -452,7 +452,7 @@ cd KnowEval
 
 **1. 后端环境准备**
 ```bash
-cd KnowEval/backend
+cd smart-evals/backend
 
 # 推荐使用 Python 3.10
 python3.10 -m venv venv
@@ -466,7 +466,7 @@ pip install -r requirements.txt
 
 **2. 前端环境准备**
 ```bash
-cd KnowEval/frontend
+cd smart-evals/frontend
 
 # 安装依赖
 npm install
