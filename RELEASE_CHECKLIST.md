@@ -170,7 +170,7 @@ git push origin v1.0.0
 ```bash
 # 在新目录克隆仓库
 cd /tmp
-git clone https://github.com/pxy0592RAG/smart-evals.git
+git clone https://github.com/pxy0592/smart-evals.git
 cd smart-evals
 
 # 测试部署流程

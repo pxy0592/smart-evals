@@ -13,7 +13,7 @@ RUN npm ci && npm cache clean --force
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 LABEL maintainer="RAG Evaluation Team"
 LABEL description="RAG Evaluation System - All-in-one Container"
