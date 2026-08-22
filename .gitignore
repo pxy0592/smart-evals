@@ -22,3 +22,8 @@ Thumbs.db
 docs/.agents/
 docs/openspec/
 
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

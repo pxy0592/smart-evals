@@ -219,10 +219,10 @@ vim .env
 3. **启动服务**
 ```bash
 # 开发环境
-python app_new.py
+python app.py
 
 # 生产环境
-gunicorn -w 4 -b 0.0.0.0:5002 app_new:app
+gunicorn -w 4 -b 0.0.0.0:5002 'app:create_app()'
 ```
 
 ### 前端部署
@@ -478,7 +478,7 @@ npm install
 # 后端（终端1）
 cd backend
 source venv/bin/activate
-python app_new.py
+python app.py
 
 # 前端（终端2）
 cd frontend

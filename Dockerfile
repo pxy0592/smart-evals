@@ -42,6 +42,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
 COPY backend/*.py /app/
 COPY backend/services/ /app/services/
 COPY backend/models/ /app/models/
+COPY backend/utils/ /app/utils/
 
 # 编译 Python 文件为 .pyc (使用 -b 生成 .pyc 在源文件旁边，而不是 __pycache__)
 RUN python3 -m compileall -b /app && \
@@ -95,7 +96,7 @@ stderr_logfile=/dev/stderr\n\
 stderr_logfile_maxbytes=0\n\
 \n\
 [program:backend]\n\
-command=python3 app_new.pyc\n\
+command=python3 app.pyc\n\
 directory=/app\n\
 autostart=true\n\
 autorestart=true\n\
