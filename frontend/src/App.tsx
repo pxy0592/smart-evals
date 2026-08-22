@@ -92,7 +92,7 @@ const AppLayout: React.FC = () => {
                             fontSize: collapsed ? 16 : 20,
                         }}
                     >
-                        {collapsed ? 'KEval' : 'SmartQ Eval'}
+                        {collapsed ? 'KEval' : 'Smart Eval'}
                     </Title>
                 </div>
                 <Menu

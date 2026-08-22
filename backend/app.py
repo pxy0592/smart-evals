@@ -62,7 +62,7 @@ def create_app():
     )
     if os.path.exists(knowflow_env):
         load_dotenv(knowflow_env, override=False)
-        print(f"Loaded SmartQ .env from: {knowflow_env}")
+        print(f"Loaded Smart .env from: {knowflow_env}")
     setup_logging(app)
     CORS(
         app,

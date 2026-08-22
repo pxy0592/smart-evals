@@ -1,5 +1,5 @@
 """
-SmartQ RAG Evaluation Module
+Smart RAG Evaluation Module
 基于 RAGAS 框架的知识库评测系统
 """
 

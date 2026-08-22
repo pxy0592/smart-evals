@@ -275,7 +275,7 @@ const Settings: React.FC = () => {
                             layout="vertical"
                             onFinish={handleSaveSettings}
                             initialValues={{
-                                systemName: 'SmartQ Evaluation',
+                                systemName: 'Smart Evaluation',
                                 language: 'zh-CN',
                                 timezone: 'Asia/Shanghai',
                                 batchSize: 10,
