@@ -21,32 +21,32 @@ class AIDatasetGenerator:
     ) -> List[Dict[str, Any]]:
         """Retrieve chunks from a knowledge base through the given provider.
 
-        Falls back to mock data when the provider returns no chunks.
+        Returns empty list when the provider returns no chunks (no mock fallback for real providers).
         """
         try:
             logger.info("Getting chunks from KB %s via provider %s", kb_id, type(provider).__name__)
             chunks = provider.get_chunks(kb_id, limit)
             if chunks:
                 logger.info("Successfully retrieved %d chunks from KB %s", len(chunks), kb_id)
-                return chunks
-            logger.warning("No chunks found in KB %s, using mock data", kb_id)
-            return self._get_mock_chunks()
+            else:
+                logger.warning("No chunks found in KB %s", kb_id)
+            return chunks
         except Exception as e:
             logger.error("Error getting chunks from KB %s: %s", kb_id, e)
-            return self._get_mock_chunks()
+            return []
 
     def _get_mock_chunks(self) -> List[Dict[str, Any]]:
         """获取模拟chunks数据用于测试"""
         return [
             {
                 "id": "chunk_1",
-                "content": "人工智能（Artificial Intelligence, AI）是指通过计算机系统模拟、延伸和扩展人类智能的技术。AI系统能够执行通常需要人类智能才能完成的任务，如视觉感知、语音识别、决策制定和语言翻译等。",
+                "content": "人工智能（Artificial Intelligence, AI）是指通过计算机系统模拟、延伸和扩展人类智能的技术。AI系统能够执行通常需要人类智能才能完成的任务，如视觉感知、语音识别、决策制定和语言翻译等。深度学习是当前AI领域最主流的技术路线，通过多层神经网络从海量数据中自动学习特征表示，在图像识别、自然语言处理等领域取得了突破性进展。",
                 "doc_name": "AI基础知识.pdf",
                 "page_number": 1,
             },
             {
                 "id": "chunk_2",
-                "content": "机器学习是人工智能的一个重要分支，它使计算机能够在没有明确编程的情况下学习和改进性能。机器学习算法通过分析大量数据来识别模式，并基于这些模式做出预测或决策。",
+                "content": "机器学习是人工智能的一个重要分支，它使计算机能够在没有明确编程的情况下学习和改进性能。机器学习算法通过分析大量数据来识别模式，并基于这些模式做出预测或决策。常见的机器学习算法包括决策树、支持向量机、随机森林和神经网络等。监督学习、无监督学习和强化学习是机器学习的三大主要范式，各自适用于不同的应用场景。",
                 "doc_name": "机器学习指南.pdf",
                 "page_number": 2,
             },
@@ -59,8 +59,7 @@ class AIDatasetGenerator:
             import os
             from langchain_openai import ChatOpenAI
 
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            db_path = os.path.join(base_dir, "evaluation.db")
+            db_path = os.getenv("DATABASE_PATH", "data/evaluation.db")
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM api_configs WHERE is_default = 1 LIMIT 1")

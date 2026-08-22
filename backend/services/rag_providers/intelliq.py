@@ -51,13 +51,17 @@ class IntelliQProvider(RagProvider):
         for attempt in range(self.max_retries + 1):
             try:
                 async with session.get(f"{self.api_base}{path}", params=params, headers=self._headers(), allow_redirects=False) as response:
-                    payload = await response.json(content_type=None)
-                    if response.status == 200:
-                        return payload
-                    error = self._error(response.status, str(payload.get("message") or payload.get("error") or f"HTTP {response.status}"))
-                    if not error.retryable or attempt >= self.max_retries:
-                        raise RuntimeError(f"{error.category}:{error.message}")
-                    await asyncio.sleep(0.2 * (2**attempt))
+                    if response.status != 200:
+                        error = self._error(response.status, f"HTTP {response.status}")
+                        if not error.retryable or attempt >= self.max_retries:
+                            raise RuntimeError(f"{error.category}:{error.message}")
+                        await asyncio.sleep(0.2 * (2**attempt))
+                        continue
+                    try:
+                        payload = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError) as exc:
+                        raise RuntimeError(f"protocol:non-json response ({exc})") from exc
+                    return payload
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt >= self.max_retries:
                     raise RuntimeError(f"timeout:{exc}") from exc
@@ -85,47 +89,77 @@ class IntelliQProvider(RagProvider):
     def get_chunks(self, kb_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve knowledge base content chunks for AI dataset generation.
 
-        Uses IntelliQ REST API to list documents and fetch chunks per document.
+        Uses IntelliQ REST API (4-step flow):
+        1. GET /knowledge-bases/{kb_id}/knowledge to list knowledge items
+        2. GET /chunks/{knowledge_id} to get chunk IDs per knowledge item
+        3. GET /chunks/by-id/{chunk_id} to get chunk data for each chunk ID
+
         Bridges async HTTP via asyncio.run() since the generator runs in a sync thread.
         """
         async def _fetch():
             chunks: list[dict[str, Any]] = []
             try:
-                docs_payload = await self._get_json(f"/knowledge-bases/{kb_id}/documents")
-                documents = docs_payload.get("data") or []
-                if not documents:
+                # Step 1: list knowledge items (documents) in the KB
+                knowledge_path = f"/knowledge-bases/{kb_id}/knowledge"
+                knowledge_payload = await self._get_json(knowledge_path, {"page": 1, "page_size": 50})
+                knowledge_items = knowledge_payload.get("data") or []
+                if not knowledge_items:
+                    logger.info("IntelliQ KB %s has no knowledge items", kb_id)
                     return chunks
-                chunks_per_doc = max(1, limit // len(documents))
-                for doc in documents[:10]:
-                    doc_id = str(doc.get("id"))
-                    doc_name = str(doc.get("name") or doc_id)
-                    if not doc_id:
+                logger.info("IntelliQ KB %s: found %d knowledge items", kb_id, len(knowledge_items))
+                chunks_per_item = max(1, limit // len(knowledge_items))
+                for item in knowledge_items[:10]:
+                    knowledge_id = str(item.get("id"))
+                    knowledge_name = str(item.get("title") or item.get("file_name") or item.get("name") or knowledge_id)
+                    kb_name = str(item.get("knowledge_base_name") or "")
+                    if not knowledge_id:
                         continue
+                    # Step 2: get chunk IDs for this knowledge item
                     try:
                         chunks_payload = await self._get_json(
-                            f"/knowledge-bases/{kb_id}/documents/{doc_id}/chunks",
-                            {"page": 1, "page_size": chunks_per_doc},
+                            f"/chunks/{knowledge_id}",
+                            {"page": 1, "page_size": chunks_per_item},
                         )
                     except RuntimeError:
+                        logger.warning("Failed to get chunk IDs for knowledge %s in KB %s", knowledge_id, kb_id)
                         continue
-                    raw_chunks = chunks_payload.get("data") or []
-                    for chunk in raw_chunks:
-                        content = str(chunk.get("content") or "").strip()
+                    chunk_ids = [
+                        str(c.get("id")) for c in (chunks_payload.get("data") or [])
+                        if c.get("id")
+                    ]
+                    if not chunk_ids:
+                        continue
+                    # Step 3: fetch chunk data by ID
+                    for chunk_id in chunk_ids:
+                        try:
+                            chunk_data = await self._get_json(f"/chunks/by-id/{chunk_id}")
+                        except RuntimeError:
+                            logger.warning("Failed to get chunk data for chunk %s", chunk_id)
+                            continue
+                        content = str((chunk_data.get("data") or {}).get("content") or "").strip()
                         if not content:
                             continue
                         chunks.append({
-                            "id": str(chunk.get("id") or ""),
+                            "id": chunk_id,
                             "content": content,
-                            "doc_name": doc_name,
-                            "doc_id": doc_id,
+                            "doc_name": knowledge_name,
+                            "doc_id": knowledge_id,
                             "dataset_id": kb_id,
+                            "knowledge_base_name": kb_name,
                         })
+                        if len(chunks) >= limit:
+                            break
                     if len(chunks) >= limit:
                         break
                 return chunks[:limit]
+            except RuntimeError:
+                logger.exception("IntelliQ API error getting chunks from KB %s", kb_id)
+                return chunks
             except Exception:
                 logger.exception("Error getting chunks from IntelliQ KB %s", kb_id)
                 return chunks
+            finally:
+                await self.close()
 
         try:
             return asyncio.run(_fetch())
