@@ -1,7 +1,7 @@
 name: smart-evals
 services:
   smart-eval:
-    image: ${IMAGE_NAME:-smart_eval:latest}
+    image: ${IMAGE_NAME:-smart-eval:latest}
     container_name: smart-eval
     restart: unless-stopped
 
