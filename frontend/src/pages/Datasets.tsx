@@ -21,6 +21,8 @@ import {
     Spin,
     InputNumber,
     App,
+    Alert,
+    Skeleton,
 } from 'antd';
 import {
     UploadOutlined,
@@ -34,20 +36,19 @@ import {
     FileExcelOutlined,
     FileMarkdownOutlined,
     RobotOutlined,
+    ReloadOutlined,
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
     datasetApi,
-    taskApi,
-    chatApi,
-    metricApi,
-    knowledgeBaseApi,
+    ragConnectionApi,
+    ragResourceApi,
 } from '../services/evaluation';
 import type {
     Dataset as ApiDataset,
-    Metric,
-    TaskCreateParams,
+    RagConnectionSummary,
+    RagResourceRef,
 } from '../services/evaluation';
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
@@ -72,19 +73,20 @@ const Datasets: React.FC = () => {
     const [generateVisible, setGenerateVisible] = useState(false);
     const [generating, setGenerating] = useState(false);
     const [createTaskVisible, setCreateTaskVisible] = useState(false);
-    const [creatingTask, setCreatingTask] = useState(false);
     const [selectedDataset, setSelectedDataset] = useState<ApiDataset | null>(
         null,
     );
     const [datasetSamples, setDatasetSamples] = useState<DatasetSample[]>([]);
     const [samplesLoading, setSamplesLoading] = useState(false);
     const [searchText, setSearchText] = useState('');
-    const [chatAssistants, setChatAssistants] = useState<any[]>([]);
-    const [metrics, setMetrics] = useState<Metric[]>([]);
-    const [loadingChats, setLoadingChats] = useState(false);
-    const [loadingMetrics, setLoadingMetrics] = useState(false);
-    const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
-    const [loadingKnowledgeBases, setLoadingKnowledgeBases] = useState(false);
+    // AI generation session state (on-demand)
+    const [genConnections, setGenConnections] = useState<RagConnectionSummary[]>([]);
+    const [genConnectionLoading, setGenConnectionLoading] = useState(false);
+    const [genConnectionError, setGenConnectionError] = useState<string | null>(null);
+    const [genSelectedConnectionId, setGenSelectedConnectionId] = useState<string | null>(null);
+    const [genKbs, setGenKbs] = useState<RagResourceRef[]>([]);
+    const [genKbLoading, setGenKbLoading] = useState(false);
+    const genAbortRef = useRef<AbortController | null>(null);
     const [form] = Form.useForm();
     const [generateForm] = Form.useForm();
     const [createTaskForm] = Form.useForm();
@@ -93,7 +95,6 @@ const Datasets: React.FC = () => {
 
     useEffect(() => {
         fetchDatasets();
-        fetchKnowledgeBases();
 
         return () => {
             if (pollingIntervalRef.current) {
@@ -121,32 +122,6 @@ const Datasets: React.FC = () => {
             pollingIntervalRef.current = null;
         }
     }, [datasets.map((d) => d.status).join(',')]);
-
-    const fetchKnowledgeBases = async () => {
-        setLoadingKnowledgeBases(true);
-        try {
-            console.log('Fetching knowledge bases...');
-            const response = await knowledgeBaseApi.list({
-                current_page: 1,
-                size: 100,
-            });
-            console.log('Knowledge bases response:', response);
-            if (response.knowledgebases) {
-                console.log(
-                    'Setting knowledge bases:',
-                    response.knowledgebases,
-                );
-                setKnowledgeBases(response.knowledgebases);
-            } else {
-                console.warn('No knowledgebases in response:', response);
-            }
-        } catch (error) {
-            console.error('Failed to fetch knowledge bases:', error);
-            message.error('获取知识库列表失败');
-        } finally {
-            setLoadingKnowledgeBases(false);
-        }
-    };
 
     const fetchDatasets = async () => {
         setLoading(true);
@@ -303,86 +278,9 @@ const Datasets: React.FC = () => {
         }
     };
 
-    const handleCreateTask = async (dataset: ApiDataset) => {
+    const handleCreateTask = (dataset: ApiDataset) => {
         setSelectedDataset(dataset);
         setCreateTaskVisible(true);
-
-        // 加载 Chat 助手列表
-        if (chatAssistants.length === 0) {
-            await fetchChatAssistants();
-        }
-
-        // 加载指标列表
-        if (metrics.length === 0) {
-            await fetchMetrics();
-        }
-
-        // 设置表单默认值
-        createTaskForm.setFieldsValue({
-            dataset_id: dataset.id,
-            name: `评测任务 - ${dataset.name}`,
-        });
-    };
-
-    const fetchChatAssistants = async () => {
-        setLoadingChats(true);
-        try {
-            const response = await chatApi.list({ page_size: 100 });
-            // RAGFlow API 返回格式: {code: 0, data: [...]}
-            if (response.code === 0 && response.data) {
-                setChatAssistants(
-                    Array.isArray(response.data) ? response.data : [],
-                );
-            }
-        } catch (error) {
-            console.error('Failed to fetch chat assistants:', error);
-            message.error('获取对话助手列表失败');
-        } finally {
-            setLoadingChats(false);
-        }
-    };
-
-    const fetchMetrics = async () => {
-        setLoadingMetrics(true);
-        try {
-            const response = await metricApi.list();
-            setMetrics(response.metrics || []);
-        } catch (error) {
-            console.error('Failed to fetch metrics:', error);
-            message.error('获取评测指标失败');
-        } finally {
-            setLoadingMetrics(false);
-        }
-    };
-
-    const handleCreateTaskSubmit = async () => {
-        try {
-            const values = await createTaskForm.validateFields();
-            setCreatingTask(true);
-
-            const taskParams: TaskCreateParams = {
-                name: values.name,
-                chat_id: values.chat_id,
-                dataset_id: selectedDataset!.id,
-                metrics: values.metrics,
-                batch_size: values.batch_size || 10,
-            };
-
-            const task = await taskApi.create(taskParams);
-            message.success(`评测任务创建成功: ${task.name || task.id}`);
-
-            setCreateTaskVisible(false);
-            createTaskForm.resetFields();
-            setSelectedDataset(null);
-
-            // 可以跳转到任务页面
-            // navigate('/tasks');
-        } catch (error) {
-            console.error('Failed to create task:', error);
-            message.error('创建评测任务失败');
-        } finally {
-            setCreatingTask(false);
-        }
     };
 
     const handleDelete = async (dataset: ApiDataset) => {
@@ -467,23 +365,94 @@ const Datasets: React.FC = () => {
         return false;
     };
 
-    const handleGenerate = async () => {
+    const closeGenModal = () => {
+        // Abort in-flight requests
+        if (genAbortRef.current) {
+            genAbortRef.current.abort();
+            genAbortRef.current = null;
+        }
+        setGenerateVisible(false);
+        generateForm.resetFields();
+        setGenConnections([]);
+        setGenConnectionLoading(false);
+        setGenConnectionError(null);
+        setGenSelectedConnectionId(null);
+        setGenKbs([]);
+        setGenKbLoading(false);
+    };
+
+    const loadGenConnections = async () => {
+        setGenConnectionLoading(true);
+        setGenConnectionError(null);
+        setGenConnections([]);
+        setGenSelectedConnectionId(null);
+        setGenKbs([]);
+        try {
+            const result = await ragConnectionApi.list();
+            setGenConnections(result.connections);
+        } catch {
+            setGenConnectionError('获取 RAG 连接列表失败');
+        } finally {
+            setGenConnectionLoading(false);
+        }
+    };
+
+    // Load connections when AI generation modal opens
+    useEffect(() => {
+        if (generateVisible) {
+            loadGenConnections();
+        }
+    }, [generateVisible]);
+
+    const handleGenConnectionChange = async (connectionId: string) => {
+        // Abort previous request
+        if (genAbortRef.current) {
+            genAbortRef.current.abort();
+        }
+        const controller = new AbortController();
+        genAbortRef.current = controller;
+
+        setGenSelectedConnectionId(connectionId);
+        setGenKbs([]);
+        generateForm.setFieldValue('kb_id', undefined);
+
+        const conn = genConnections.find((c) => c.id === connectionId);
+        if (!conn || !conn.capabilities.generate_dataset_from_knowledge_base) {
+            return;
+        }
+
+        setGenKbLoading(true);
+        try {
+            const result = await ragResourceApi.listKnowledgeBases(connectionId, { limit: 100 });
+            if (!controller.signal.aborted) {
+                setGenKbs(result.items.filter((item) => item.selectable));
+            }
+        } catch {
+            if (!controller.signal.aborted) {
+                message.error('获取知识库列表失败');
+            }
+        } finally {
+            if (!controller.signal.aborted) {
+                setGenKbLoading(false);
+            }
+        }
+    };
+
+    const handleGenerateSubmit = async () => {
         try {
             const values = await generateForm.validateFields();
             setGenerating(true);
 
+            const conn = genConnections.find((c) => c.id === genSelectedConnectionId);
             const response = await datasetApi.generateAIDataset({
                 kb_id: values.kb_id,
                 sample_count: values.sample_count,
-                question_types: values.question_types || [
-                    'factual',
-                    'analytical',
-                ],
+                question_types: values.question_types || ['factual', 'analytical'],
+                connection_id: genSelectedConnectionId!,
             });
 
             message.success(`AI 数据集生成成功: ${response.name}`);
-            setGenerateVisible(false);
-            generateForm.resetFields();
+            closeGenModal();
             fetchDatasets();
         } catch (error) {
             console.error('Failed to generate AI dataset:', error);
@@ -492,6 +461,12 @@ const Datasets: React.FC = () => {
             setGenerating(false);
         }
     };
+
+    const selectedGenConnection = genConnections.find(
+        (c) => c.id === genSelectedConnectionId,
+    );
+    const genCapable = selectedGenConnection?.capabilities
+        .generate_dataset_from_knowledge_base ?? false;
 
     const uploadProps: UploadProps = {
         name: 'file',
@@ -638,15 +613,18 @@ const Datasets: React.FC = () => {
             <Modal
                 title="AI 智能生成数据集"
                 open={generateVisible}
-                onOk={handleGenerate}
-                onCancel={() => {
-                    setGenerateVisible(false);
-                    generateForm.resetFields();
-                }}
+                onOk={handleGenerateSubmit}
+                onCancel={closeGenModal}
                 confirmLoading={generating}
                 okText="生成"
                 cancelText="取消"
                 width={600}
+                okButtonProps={{
+                    disabled:
+                        !genSelectedConnectionId ||
+                        !genCapable ||
+                        genConnectionLoading,
+                }}
             >
                 <Form
                     layout="vertical"
@@ -657,78 +635,115 @@ const Datasets: React.FC = () => {
                         <input type="hidden" />
                     </Form.Item>
 
-                    <>
-                        <Form.Item
-                            label="选择知识库"
-                            name="kb_id"
-                            rules={[
-                                { required: true, message: '请选择知识库' },
-                            ]}
-                        >
-                            <Select
-                                placeholder="选择要基于的知识库"
-                                loading={loadingKnowledgeBases}
-                                showSearch
-                                filterOption={(input, option) =>
-                                    String(option?.label ?? option?.value ?? '')
-                                        .toLowerCase()
-                                        .includes(input.toLowerCase())
+                    <Form.Item
+                        label="选择 RAG 连接"
+                        required
+                    >
+                        {genConnectionLoading ? (
+                            <Skeleton.Input active block />
+                        ) : genConnectionError ? (
+                            <Alert
+                                type="error"
+                                message={genConnectionError}
+                                action={
+                                    <Button
+                                        size="small"
+                                        icon={<ReloadOutlined />}
+                                        onClick={loadGenConnections}
+                                    >
+                                        重试
+                                    </Button>
                                 }
-                            >
-                                {knowledgeBases.map((kb) => (
-                                    <Select.Option key={kb.id} value={kb.id}>
-                                        {kb.name}
-                                    </Select.Option>
-                                ))}
-                            </Select>
-                        </Form.Item>
-
-                        <Form.Item
-                            label="生成数量"
-                            name="sample_count"
-                            rules={[
-                                { required: true, message: '请输入生成数量' },
-                            ]}
-                            initialValue={10}
-                        >
-                            <InputNumber
-                                min={1}
-                                max={100}
-                                placeholder="建议 10-50 个样本"
-                                style={{ width: '100%' }}
                             />
-                        </Form.Item>
-
-                        <Form.Item
-                            label="问题类型"
-                            name="question_types"
-                            initialValue={['factual', 'analytical']}
-                        >
+                        ) : (
                             <Select
-                                mode="multiple"
-                                placeholder="选择要生成的问题类型"
-                                options={[
-                                    { label: '事实性问题', value: 'factual' },
-                                    {
-                                        label: '分析性问题',
-                                        value: 'analytical',
-                                    },
-                                    {
-                                        label: '应用性问题',
-                                        value: 'application',
-                                    },
-                                    {
-                                        label: '比较性问题',
-                                        value: 'comparison',
-                                    },
-                                    {
-                                        label: '解释性问题',
-                                        value: 'explanation',
-                                    },
-                                ]}
+                                placeholder="选择 RAG 系统连接"
+                                value={genSelectedConnectionId}
+                                onChange={handleGenConnectionChange}
+                                options={genConnections.map((c) => ({
+                                    value: c.id,
+                                    label: `${c.name} (${c.provider})`,
+                                    disabled:
+                                        !c.enabled ||
+                                        !c.capabilities
+                                            .generate_dataset_from_knowledge_base,
+                                }))}
                             />
-                        </Form.Item>
-                    </>
+                        )}
+                    </Form.Item>
+
+                    {genSelectedConnectionId && !genCapable && (
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message="该连接不支持 AI 数据集生成"
+                            description="请选择其他支持基于知识库生成数据集的 RAG 连接。"
+                            style={{ marginBottom: 16 }}
+                        />
+                    )}
+
+                    {genSelectedConnectionId && genCapable && (
+                        <>
+                            <Form.Item
+                                label="选择知识库"
+                                name="kb_id"
+                                rules={[
+                                    { required: true, message: '请选择知识库' },
+                                ]}
+                            >
+                                <Select
+                                    placeholder="选择要基于的知识库"
+                                    loading={genKbLoading}
+                                    showSearch
+                                    filterOption={(input, option) =>
+                                        String(option?.label ?? option?.value ?? '')
+                                            .toLowerCase()
+                                            .includes(input.toLowerCase())
+                                    }
+                                >
+                                    {genKbs.map((kb) => (
+                                        <Select.Option key={kb.id} value={kb.id}>
+                                            {kb.name}
+                                        </Select.Option>
+                                    ))}
+                                </Select>
+                            </Form.Item>
+
+                            <Form.Item
+                                label="生成数量"
+                                name="sample_count"
+                                rules={[
+                                    { required: true, message: '请输入生成数量' },
+                                ]}
+                                initialValue={10}
+                            >
+                                <InputNumber
+                                    min={1}
+                                    max={100}
+                                    placeholder="建议 10-50 个样本"
+                                    style={{ width: '100%' }}
+                                />
+                            </Form.Item>
+
+                            <Form.Item
+                                label="问题类型"
+                                name="question_types"
+                                initialValue={['factual', 'analytical']}
+                            >
+                                <Select
+                                    mode="multiple"
+                                    placeholder="选择要生成的问题类型"
+                                    options={[
+                                        { label: '事实性问题', value: 'factual' },
+                                        { label: '分析性问题', value: 'analytical' },
+                                        { label: '应用性问题', value: 'application' },
+                                        { label: '比较性问题', value: 'comparison' },
+                                        { label: '解释性问题', value: 'explanation' },
+                                    ]}
+                                />
+                            </Form.Item>
+                        </>
+                    )}
 
                     <div style={{ marginTop: 16 }}>
                         <Title level={5}>说明</Title>

@@ -238,6 +238,7 @@ export const datasetApi = {
         kb_id: string;
         sample_count: number;
         question_types: string[];
+        connection_id?: string;
     }) => {
         return request.post<Dataset>(
             '/evaluation/datasets/generate/ai',
