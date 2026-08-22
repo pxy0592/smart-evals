@@ -142,7 +142,15 @@ echo ""
 
 # 7. 检查环境变量示例
 echo -e "${BLUE}[7/8] 检查环境变量配置...${NC}"
-required_vars=("OPENAI_API_KEY" "SILICONFLOW_API_KEY" "RAGFLOW_API_KEY" "DEFAULT_MODEL")
+required_vars=(
+    "OPENAI_API_KEY"
+    "SILICONFLOW_API_KEY"
+    "RAGFLOW_API_KEY"
+    "DEFAULT_MODEL"
+    "DATABASE_PATH"
+    "RAG_CREDENTIAL_ENCRYPTION_KEY"
+    "SMART_EVAL_ADMIN_TOKEN"
+)
 for var in "${required_vars[@]}"; do
     if grep -q "$var" .env.example; then
         check_pass ".env.example 包含 $var"

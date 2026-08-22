@@ -1,5 +1,17 @@
 # 更新日志
 
+## [Unreleased] - 2026-08-22
+
+### 新增
+- IntelliQ RAG 连接配置、知识库/Agent 发现和 SSE 评测适配
+- Provider 来源快照、样本会话隔离、部分失败警告和报告筛选
+- JSON、JSONL、CSV、XLSX、XLS 数据集统一归一化（最大 10 MiB）
+
+### 安全与可靠性
+- IntelliQ API Key 加密保存，连接写操作由部署级管理员令牌保护
+- 可配置 RAG URL 增加规范化和 SSRF 防护
+- SQLite 使用持久化路径、WAL、busy timeout 和增量迁移
+
 ## [1.0.0] - 2024-11-10
 
 ### 新增

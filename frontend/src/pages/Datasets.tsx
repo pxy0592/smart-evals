@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
 import {
     Card,
@@ -53,6 +52,7 @@ import type {
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
 import { PageIntro } from '../components/PageIntro';
+import { EvaluationTaskForm } from '../components/EvaluationTaskForm';
 
 const { Title, Text, Paragraph } = Typography;
 const { Search } = Input;
@@ -669,15 +669,11 @@ const Datasets: React.FC = () => {
                                 placeholder="选择要基于的知识库"
                                 loading={loadingKnowledgeBases}
                                 showSearch
-                                filterOption={(input, option) => {
-                                    const children = option?.children;
-                                    if (typeof children === 'string') {
-                                        return children
-                                            .toLowerCase()
-                                            .includes(input.toLowerCase());
-                                    }
-                                    return false;
-                                }}
+                                filterOption={(input, option) =>
+                                    String(option?.label ?? option?.value ?? '')
+                                        .toLowerCase()
+                                        .includes(input.toLowerCase())
+                                }
                             >
                                 {knowledgeBases.map((kb) => (
                                     <Select.Option key={kb.id} value={kb.id}>
@@ -885,127 +881,18 @@ const Datasets: React.FC = () => {
 
             {/* 创建评测任务模态框 */}
             <Modal
-                title={`创建评测任务：${selectedDataset?.name || ''}`}
+                title="创建评测任务"
                 open={createTaskVisible}
-                onOk={handleCreateTaskSubmit}
-                onCancel={() => {
-                    setCreateTaskVisible(false);
-                    createTaskForm.resetFields();
-                    setSelectedDataset(null);
-                }}
-                confirmLoading={creatingTask}
-                okText="创建任务"
-                cancelText="取消"
+                onCancel={() => setCreateTaskVisible(false)}
+                footer={null}
                 width={700}
+                destroyOnClose
             >
-                <Form layout="vertical" form={createTaskForm}>
-                    <Form.Item
-                        label="任务名称"
-                        name="name"
-                        rules={[{ required: true, message: '请输入任务名称' }]}
-                    >
-                        <Input placeholder="例如：金融知识库-基础评测" />
-                    </Form.Item>
-
-                    <Form.Item
-                        label="选择对话助手"
-                        name="chat_id"
-                        rules={[
-                            {
-                                required: true,
-                                message: '请选择要评测的对话助手',
-                            },
-                        ]}
-                    >
-                        <Select
-                            placeholder="选择要评测的对话助手 (Chat Assistant)"
-                            loading={loadingChats}
-                            showSearch
-                            optionFilterProp="children"
-                            filterOption={(input, option) =>
-                                (option?.label ?? '')
-                                    .toLowerCase()
-                                    .includes(input.toLowerCase())
-                            }
-                            options={chatAssistants.map((chat) => ({
-                                label: chat.name,
-                                value: chat.id,
-                            }))}
-                        />
-                    </Form.Item>
-
-                    <Form.Item
-                        label="选择评测指标"
-                        name="metrics"
-                        rules={[
-                            {
-                                required: true,
-                                message: '请至少选择一个评测指标',
-                            },
-                        ]}
-                    >
-                        <Select
-                            mode="multiple"
-                            placeholder="选择要使用的评测指标"
-                            loading={loadingMetrics}
-                            options={metrics.map((metric) => ({
-                                label: `${metric.display_name} - ${metric.description}`,
-                                value: metric.name,
-                            }))}
-                        />
-                    </Form.Item>
-
-                    <Form.Item
-                        label="批处理大小"
-                        name="batch_size"
-                        initialValue={10}
-                        tooltip="每批处理的样本数量，影响处理速度和内存占用"
-                    >
-                        <Select>
-                            <Select.Option value={5}>
-                                5 (慢速，低内存)
-                            </Select.Option>
-                            <Select.Option value={10}>10 (推荐)</Select.Option>
-                            <Select.Option value={20}>
-                                20 (快速，高内存)
-                            </Select.Option>
-                            <Select.Option value={50}>
-                                50 (极速，极高内存)
-                            </Select.Option>
-                        </Select>
-                    </Form.Item>
-
-                    <div
-                        style={{
-                            marginTop: 16,
-                            padding: 12,
-                            background: '#f5f5f5',
-                            borderRadius: 4,
-                        }}
-                    >
-                        <Title level={5}>数据集信息</Title>
-                        <Space direction="vertical" size="small">
-                            <Text>
-                                样本数量: {selectedDataset?.num_samples}
-                            </Text>
-                            <Text>
-                                包含参考答案:{' '}
-                                {selectedDataset?.has_reference ? '是' : '否'}
-                            </Text>
-                            <Text>
-                                包含上下文:{' '}
-                                {selectedDataset?.has_contexts ? '是' : '否'}
-                            </Text>
-                        </Space>
-                    </div>
-
-                    <div style={{ marginTop: 16 }}>
-                        <Text type="secondary">
-                            提示：评测任务创建后将自动开始执行，请确保已正确配置
-                            API 密钥。
-                        </Text>
-                    </div>
-                </Form>
+                <EvaluationTaskForm
+                    initialDatasetId={selectedDataset?.id}
+                    onCreated={() => setCreateTaskVisible(false)}
+                    onCancel={() => setCreateTaskVisible(false)}
+                />
             </Modal>
         </div>
     );

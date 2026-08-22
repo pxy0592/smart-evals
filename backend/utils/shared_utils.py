@@ -11,6 +11,60 @@ from werkzeug.exceptions import HTTPException
 
 logger = logging.getLogger(__name__)
 
+SENSITIVE_FIELD_NAMES = {
+    "api_key",
+    "apiKey",
+    "x-api-key",
+    "authorization",
+    "admin_token",
+    "SMART_EVAL_ADMIN_TOKEN",
+}
+
+
+def redact_mapping(value: Any) -> Any:
+    """Recursively redact credential-like fields before logging."""
+    if isinstance(value, Mapping):
+        sensitive = {name.lower() for name in SENSITIVE_FIELD_NAMES}
+        return {
+            key: "***" if str(key).lower() in sensitive else redact_mapping(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_mapping(item) for item in value]
+    return value
+
+
+def provider_error_response(
+    category: str, message: str, status_code: int, retryable: bool = False
+):
+    return (
+        jsonify(
+            {
+                "error": {
+                    "category": category,
+                    "message": message,
+                    "retryable": retryable,
+                }
+            }
+        ),
+        status_code,
+    )
+
+SENSITIVE_FIELD_NAMES = {"api_key", "apiKey", "x-api-key", "authorization", "admin_token", "SMART_EVAL_ADMIN_TOKEN"}
+
+
+def redact_mapping(value: Any) -> Any:
+    """Recursively redact credential-like fields before logging or serialization."""
+    if isinstance(value, Mapping):
+        return {key: ("***" if str(key).lower() in {name.lower() for name in SENSITIVE_FIELD_NAMES} else redact_mapping(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_mapping(item) for item in value]
+    return value
+
+
+def provider_error_response(category: str, message: str, status_code: int, retryable: bool = False):
+    return jsonify({"error": {"category": category, "message": message, "retryable": retryable}}), status_code
+
 
 class ResponseFormatter:
     """Create a consistent JSON envelope for Flask endpoints."""

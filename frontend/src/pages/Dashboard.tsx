@@ -127,6 +127,20 @@ const Dashboard: React.FC = () => {
             ),
         },
         {
+            title: 'RAG 来源',
+            key: 'rag_source',
+            render: (_, record) => (
+                <Space size="small">
+                    <Tag color={record.rag_provider === 'intelliq' ? 'blue' : 'default'}>
+                        {record.rag_provider || 'ragflow'}
+                    </Tag>
+                    <Text type="secondary">
+                        {record.assistant_name_snapshot || record.assistant_id || record.chat_id || '-'}
+                    </Text>
+                </Space>
+            ),
+        },
+        {
             title: '状态',
             dataIndex: 'status',
             key: 'status',

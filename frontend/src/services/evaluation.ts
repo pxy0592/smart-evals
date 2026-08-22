@@ -1,18 +1,4 @@
 import { request, uploadFile } from './api';
-import axios from 'axios';
-
-// RAGFlow API 配置 - 通过后端统一代理访问
-// 请求路径: /api/v1/evaluation/ragflow/api/v1/xxx
-// 后端会转发到: {RAGFLOW_BASE_URL}/api/v1/xxx
-const RAGFLOW_API_BASE = '/api/v1/evaluation/ragflow/api/v1';
-
-const ragflowClient = axios.create({
-    baseURL: RAGFLOW_API_BASE,
-    timeout: 30000,
-    headers: {
-        'Content-Type': 'application/json',
-    },
-});
 
 // 类型定义
 export interface Dataset {
@@ -39,7 +25,13 @@ export interface DatasetUploadParams {
 export interface EvaluationTask {
     id: string;
     name?: string;
-    kb_id: string;
+    kb_id?: string;
+    chat_id?: string;
+    assistant_id?: string;
+    assistant_name_snapshot?: string;
+    dataset_name?: string;
+    rag_provider?: RagProvider;
+    rag_connection_id?: string;
     dataset_id: string;
     metrics: string[];
     llm_model?: string;
@@ -52,15 +44,75 @@ export interface EvaluationTask {
     started_at?: string;
     completed_at?: string;
     error_message?: string;
+    outcome?: 'succeeded' | 'partially_succeeded' | 'failed' | 'cancelled';
+    has_warnings?: boolean;
+    failed_sample_count?: number;
+    scored_sample_count?: number;
+}
+
+export interface DatasetSample {
+    question: string;
+    expected_answer?: string;
+    contexts?: string[];
+    reference_contexts?: string[];
+    [key: string]: unknown;
 }
 
 export interface TaskCreateParams {
     name?: string;
-    chat_id: string; // 使用 Chat 助手 ID 而不是知识库 ID
+    chat_id?: string; // legacy RAGFlow compatibility
     dataset_id: string;
     metrics: string[];
     llm_model?: string;
     batch_size?: number;
+    rag_target?: RagTarget;
+}
+
+export type RagProvider = 'ragflow' | 'intelliq';
+export type KnowledgeBaseSelectionMode = 'all' | 'selected' | 'none';
+
+export interface RagTarget {
+    provider: RagProvider;
+    connection_id: string;
+    assistant_id: string;
+    knowledge_base_ids?: string[];
+}
+
+export interface RagConnectionSummary {
+    id: string;
+    provider: RagProvider;
+    name: string;
+    api_url: string;
+    api_key_configured: boolean;
+    editable: boolean;
+    enabled: boolean;
+    status: 'untested' | 'available' | 'unavailable';
+    revision: number;
+    capabilities: {
+        list_knowledge_bases: boolean;
+        list_assistants: boolean;
+        select_multiple_knowledge_bases: boolean;
+        generate_dataset_from_knowledge_base: boolean;
+        streaming_chat: boolean;
+    };
+    last_tested_at?: string;
+    error?: { category: string; message: string; retryable: boolean } | null;
+}
+
+export interface RagResourceRef {
+    id: string;
+    provider: RagProvider;
+    connection_id: string;
+    name: string;
+    description?: string;
+    selectable: boolean;
+    disabled_reason?: string | null;
+}
+
+export interface AssistantRef extends RagResourceRef {
+    built_in?: boolean | null;
+    knowledge_base_selection_mode: KnowledgeBaseSelectionMode | null;
+    allowed_knowledge_base_ids?: string[];
 }
 
 export interface EvaluationReport {
@@ -93,6 +145,20 @@ export interface EvaluationReport {
         contexts: string[];
         [key: string]: any; // for metric scores
     }>;
+    rag_provider?: RagProvider;
+    rag_connection_id?: string | null;
+    assistant_id?: string | null;
+    knowledge_base_ids?: string[];
+    source_snapshot?: {
+        connection_name: string;
+        assistant_name: string;
+        knowledge_base_selection_mode?: KnowledgeBaseSelectionMode | null;
+        knowledge_bases: Array<{ id: string; name: string }>;
+    };
+    scoredSamples?: number;
+    failedSamples?: number;
+    warning?: { code: string; message: string; failed_samples: number } | null;
+    status?: string;
 }
 
 export interface Metric {
@@ -258,11 +324,21 @@ export const reportApi = {
 
     // 获取报告列表
     list: (params?: {
-        kb_id?: string;
+        rag_provider?: RagProvider;
+        rag_connection_id?: string;
+        assistant_id?: string;
+        knowledge_base_id?: string;
         start_date?: string;
         end_date?: string;
+        offset?: number;
+        limit?: number;
     }) => {
-        return request.get<EvaluationReport[]>('/evaluation/reports', {
+        return request.get<{
+            reports: EvaluationReport[];
+            total: number;
+            offset: number;
+            limit: number;
+        }>('/evaluation/reports', {
             params,
         });
     },
@@ -382,6 +458,76 @@ export const systemApi = {
     },
 };
 
+export const ragConnectionApi = {
+    list: () =>
+        request.get<{ connections: RagConnectionSummary[] }>(
+            '/evaluation/rag-connections',
+        ),
+    create: (
+        data: {
+            provider: 'intelliq';
+            name: string;
+            api_url: string;
+            api_key: string;
+            enabled?: boolean;
+        },
+        adminToken: string,
+    ) =>
+        request.post<RagConnectionSummary>('/evaluation/rag-connections', data, {
+            headers: { Authorization: `Bearer ${adminToken}` },
+        }),
+    update: (
+        id: string,
+        data: Partial<{
+            name: string;
+            api_url: string;
+            api_key: string;
+            enabled: boolean;
+        }>,
+        adminToken: string,
+    ) =>
+        request.put<RagConnectionSummary>(
+            `/evaluation/rag-connections/${id}`,
+            data,
+            { headers: { Authorization: `Bearer ${adminToken}` } },
+        ),
+    test: (id: string, adminToken: string) =>
+        request.post<{
+            status: 'available';
+            knowledge_base_count: number;
+            assistant_count: number;
+            tested_at: string;
+        }>(`/evaluation/rag-connections/${id}/test`, undefined, {
+            headers: { Authorization: `Bearer ${adminToken}` },
+        }),
+};
+
+export const ragResourceApi = {
+    listKnowledgeBases: (
+        connectionId: string,
+        params?: { search?: string; assistant_id?: string; limit?: number },
+    ) =>
+        request.get<{
+            provider: RagProvider;
+            connection_id: string;
+            items: RagResourceRef[];
+            total: number;
+        }>(
+            `/evaluation/rag-connections/${connectionId}/knowledge-bases`,
+            { params },
+        ),
+    listAssistants: (
+        connectionId: string,
+        params?: { search?: string; limit?: number },
+    ) =>
+        request.get<{
+            provider: RagProvider;
+            connection_id: string;
+            items: AssistantRef[];
+            total: number;
+        }>(`/evaluation/rag-connections/${connectionId}/assistants`, { params }),
+};
+
 // 知识库相关 API
 export const knowledgeBaseApi = {
     // 获取知识库列表
@@ -405,7 +551,7 @@ export const knowledgeBaseApi = {
     },
 };
 
-// Chat 助手相关 API（直接调用 RAGFlow）
+// Legacy Chat API facade backed by the provider-neutral backend.
 export const chatApi = {
     // 获取 Chat 助手列表
     list: async (params?: {
@@ -413,13 +559,32 @@ export const chatApi = {
         page_size?: number;
         name?: string;
     }) => {
-        const response = await ragflowClient.get('/chats', { params });
-        return response.data;
+        const connections = await ragConnectionApi.list();
+        const ragflow = connections.connections.find(
+            (item) => item.provider === 'ragflow',
+        );
+        if (!ragflow) return { code: 0, data: [], message: '' };
+        const response = await ragResourceApi.listAssistants(ragflow.id, {
+            search: params?.name,
+            limit: params?.page_size || 100,
+        });
+        return {
+            code: 0,
+            message: '',
+            data: response.items.map((item) => ({
+                ...item,
+                datasets: item.allowed_knowledge_base_ids || [],
+            })),
+        };
     },
 
     // 获取 Chat 助手详情
     get: async (chatId: string) => {
-        const response = await ragflowClient.get(`/chats/${chatId}`);
-        return response.data;
+        const response = await chatApi.list({ page: 1, page_size: 100 });
+        return {
+            code: 0,
+            message: '',
+            data: response.data.find((item: any) => item.id === chatId),
+        };
     },
 };

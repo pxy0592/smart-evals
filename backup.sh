@@ -22,7 +22,7 @@ mkdir -p "$BACKUP_DIR"
 
 # 生成备份文件名
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-BACKUP_FILE="$BACKUP_DIR/knowflow-eval-backup-$TIMESTAMP.tar.gz"
+BACKUP_FILE="$BACKUP_DIR/smart-eval-backup-$TIMESTAMP.tar.gz"
 
 echo "创建备份..."
 echo "备份目录:"
@@ -32,7 +32,18 @@ echo "  - logs/    (日志)"
 echo ""
 
 # 创建备份
-tar -czf "$BACKUP_FILE" data/ tmp/ logs/ .env 2>/dev/null || true
+BACKUP_ITEMS=()
+for item in data tmp logs; do
+    if [ -e "$item" ]; then
+        BACKUP_ITEMS+=("$item")
+    fi
+done
+if [ ${#BACKUP_ITEMS[@]} -eq 0 ]; then
+    mkdir -p data
+    BACKUP_ITEMS+=("data")
+fi
+tar -czf "$BACKUP_FILE" "${BACKUP_ITEMS[@]}"
+chmod 600 "$BACKUP_FILE"
 
 # 检查备份大小
 BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)

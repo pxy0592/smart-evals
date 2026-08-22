@@ -29,6 +29,7 @@ import {
 } from '@ant-design/icons';
 import { systemApi } from '../services/evaluation';
 import { PageIntro } from '../components/PageIntro';
+import { RagConnectionForm } from '../components/RagConnectionForm';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -264,6 +265,17 @@ const Settings: React.FC = () => {
             />
 
             <Tabs defaultActiveKey="general">
+                <TabPane
+                    tab={
+                        <span>
+                            <ApiOutlined />
+                            RAG 系统
+                        </span>
+                    }
+                    key="rag-systems"
+                >
+                    <RagConnectionForm />
+                </TabPane>
                 <TabPane
                     tab={
                         <span>

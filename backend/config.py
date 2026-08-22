@@ -32,8 +32,12 @@ class Config:
     DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "Qwen/Qwen2.5-32B-Instruct")
     DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "BAAI/bge-m3")
     EVALUATION_TIMEOUT = int(os.getenv("EVALUATION_TIMEOUT", 300))
-    EVALUATION_MAX_WORKERS = int(os.getenv("EVALUATION_MAX_WORKERS", 2))
-    EVALUATION_MAX_RETRIES = int(os.getenv("EVALUATION_MAX_RETRIES", 2))
+    EVALUATION_MAX_WORKERS = int(
+        os.getenv("EVALUATION_MAX_WORKERS", os.getenv("MAX_WORKERS", 2))
+    )
+    EVALUATION_MAX_RETRIES = int(
+        os.getenv("EVALUATION_MAX_RETRIES", os.getenv("MAX_RETRIES", 2))
+    )
     TEMP_DIR = os.getenv("TEMP_DIR", "tmp")
     DATASETS_DIR = os.path.join(TEMP_DIR, "datasets")
     REPORTS_DIR = os.path.join(TEMP_DIR, "evaluation", "reports")
@@ -45,7 +49,14 @@ class Config:
     ALLOWED_EXTENSIONS = {"json", "xlsx", "tsv", "xls", "csv"}
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
     DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///evaluation.db")
-    DATABASE_PATH = os.getenv("DATABASE_PATH", "evaluation.db")
+    DATABASE_PATH = os.getenv("DATABASE_PATH", "data/evaluation.db")
+    RAG_CREDENTIAL_ENCRYPTION_KEY = os.getenv("RAG_CREDENTIAL_ENCRYPTION_KEY", "")
+    SMART_EVAL_ADMIN_TOKEN = os.getenv("SMART_EVAL_ADMIN_TOKEN", "")
+    RAG_PROVIDER_ALLOWED_HOSTS = {
+        host.strip()
+        for host in os.getenv("RAG_PROVIDER_ALLOWED_HOSTS", "").split(",")
+        if host.strip()
+    }
 
     @staticmethod
     def init_app(app):

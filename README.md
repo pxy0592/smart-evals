@@ -4,7 +4,7 @@
 
 ## 🚀 特性
 
-- **多系统支持**: 可与 RAGFlow、LangChain 等多种 RAG 系统集成
+- **多系统支持**: 在保留 RAGFlow 的同时接入 IntelliQ，统一知识库、Agent、任务和报告来源
 - **丰富指标**: 基于 RAGAS 框架的多种评测指标
 - **可视化报告**: 直观的评测结果展示
 - **批量评测**: 支持大规模数据集评测
@@ -387,9 +387,21 @@ JSON 格式示例：
 | `PORT` | 服务端口 | 5002 |
 | `RAGFLOW_BASE_URL` | RAGFlow 服务地址 | http://localhost:9380 |
 | `RAGFLOW_API_KEY` | RAGFlow API 密钥 | - |
+| `RAG_CREDENTIAL_ENCRYPTION_KEY` | IntelliQ 凭据加密密钥（通过外部 secret 注入） | - |
+| `SMART_EVAL_ADMIN_TOKEN` | 保护 RAG 连接创建、修改、启停和测试 | - |
+| `RAG_PROVIDER_ALLOWED_HOSTS` | 私网或 HTTP RAG 主机精确白名单 | - |
+| `DATABASE_PATH` | SQLite 持久化路径 | data/evaluation.db |
 | `OPENAI_API_KEY` | OpenAI API 密钥 | - |
 | `SILICONFLOW_API_KEY` | 硅基流动 API 密钥 | - |
 | `DEFAULT_LLM_MODEL` | 默认 LLM 模型 | Qwen/Qwen2.5-32B-Instruct |
+
+### IntelliQ 接入
+
+在“系统设置 -> RAG 系统”中填写 IntelliQ 服务根地址或以 `/api/v1` 结尾的地址。系统统一保存规范化服务根地址，并拒绝 API 文档、Swagger、userinfo、query 和 fragment 地址。连接写操作需要部署级管理员令牌，保存后的 IntelliQ API Key 不会返回浏览器。
+
+任务知识库选择遵循 Agent 的 `all / selected / none` 模式。每个评测样本使用独立会话，只有收到明确完成信号的回答进入评分。部分失败任务生成带警告的报告；全部样本失败时不生成最终质量报告。
+
+评测数据集支持 JSON、JSONL、CSV、XLSX、XLS，单文件最大 10 MiB，归一化完成后才能创建任务。
 
 ### 前端配置
 

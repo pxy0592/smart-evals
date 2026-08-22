@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
 import {
     Card,
@@ -48,7 +47,7 @@ import {
     DeleteOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { reportApi, datasetApi, chatApi } from '../services/evaluation';
+import { reportApi, datasetApi, ragConnectionApi } from '../services/evaluation';
 import type {
     EvaluationReport as ApiReport,
     DatasetSample,
@@ -60,39 +59,6 @@ import { PageIntro } from '../components/PageIntro';
 const { Title, Text, Paragraph } = Typography;
 const { RangePicker } = DatePicker;
 const { Panel } = Collapse;
-
-interface EvaluationReport {
-    id: string;
-    taskId: string;
-    taskName: string;
-    kbName: string;
-    datasetName: string;
-    overallScore: number;
-    metricScores: {
-        [key: string]: {
-            mean: number;
-            std: number;
-            min: number;
-            max: number;
-        };
-    };
-    createdAt: string;
-    duration: string;
-    totalSamples: number;
-    recommendations: string[];
-    lowScoreSamples: Array<{
-        question: string;
-        score: number;
-        issue: string;
-    }>;
-    detailed_scores?: Array<{
-        user_input: string;
-        actual_answer: string;
-        expected_answer: string;
-        contexts: string[];
-        [key: string]: any; // for metric scores
-    }>;
-}
 
 interface MetricTrend {
     date: string;
@@ -136,7 +102,7 @@ const Reports: React.FC = () => {
     };
 
     const [selectedReport, setSelectedReport] =
-        useState<EvaluationReport | null>(null);
+        useState<ApiReport | null>(null);
     const [viewMode, setViewMode] = useState<'list' | 'detail'>('list');
     const [reports, setReports] = useState<ApiReport[]>([]);
     const [loading, setLoading] = useState(true);
@@ -144,18 +110,15 @@ const Reports: React.FC = () => {
     const [samplesLoading, setSamplesLoading] = useState(false);
     const [expandedRowKeys, setExpandedRowKeys] = useState<string[]>([]);
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
+    const deepLinkHandled = useRef(false);
     const [knowledgeBases, setKnowledgeBases] = useState<any[]>([]);
     const [selectedKbId, setSelectedKbId] = useState<string>('all');
 
     // 获取知识库列表
     const fetchKnowledgeBases = async () => {
         try {
-            const response = await chatApi.list({ page: 1, page_size: 100 });
-            if (response.code === 0 && response.data) {
-                setKnowledgeBases(
-                    Array.isArray(response.data) ? response.data : [],
-                );
-            }
+            const response = await ragConnectionApi.list();
+            setKnowledgeBases(response.connections);
         } catch (error) {
             console.error('Failed to fetch knowledge bases:', error);
             message.error('获取知识库列表失败');
@@ -192,6 +155,17 @@ const Reports: React.FC = () => {
         }
     }, [reports]);
 
+    useEffect(() => {
+        if (deepLinkHandled.current || reports.length === 0) return;
+        const taskId = new URLSearchParams(window.location.search).get('taskId');
+        if (!taskId) return;
+        const report = reports.find((item) => item.task_id === taskId);
+        if (report) {
+            deepLinkHandled.current = true;
+            void showReportDetail(report);
+        }
+    }, [reports]);
+
     // 监听知识库筛选变化
     useEffect(() => {
         fetchReports();
@@ -206,11 +180,11 @@ const Reports: React.FC = () => {
             // 构建查询参数
             const params: any = {};
             if (selectedKbId && selectedKbId !== 'all') {
-                params.kb_id = selectedKbId;
+                params.rag_connection_id = selectedKbId;
             }
 
             const response = await reportApi.list(params);
-            const reportsList = Array.isArray(response) ? response : [];
+            const reportsList = response.reports || [];
             setReports(reportsList);
 
             // 检查是否有运行中的任务
@@ -285,6 +259,17 @@ const Reports: React.FC = () => {
             render: (text) => <Tooltip title={text}>{text}</Tooltip>,
         },
         {
+            title: 'RAG 系统',
+            dataIndex: 'rag_provider',
+            key: 'rag_provider',
+            width: 110,
+            render: (provider) => (
+                <Tag color={provider === 'intelliq' ? 'blue' : 'default'}>
+                    {provider || 'ragflow'}
+                </Tag>
+            ),
+        },
+        {
             title: '数据集',
             dataIndex: 'dataset_name',
             key: 'dataset_name',
@@ -335,6 +320,21 @@ const Reports: React.FC = () => {
             render: (count) => count || 0,
         },
         {
+            title: '执行结果',
+            key: 'outcome',
+            width: 140,
+            render: (_, record) =>
+                record.warning ? (
+                    <Tooltip title={record.warning.message}>
+                        <Tag color="warning">
+                            {record.scoredSamples}/{record.totalSamples} 成功
+                        </Tag>
+                    </Tooltip>
+                ) : (
+                    <Tag color="success">完整</Tag>
+                ),
+        },
+        {
             title: '生成时间',
             dataIndex: 'createdAt',
             key: 'createdAt',
@@ -377,11 +377,11 @@ const Reports: React.FC = () => {
         try {
             // 获取报告的详细数据，包括样本评测结果
             const detailResponse = await reportApi.get(report.task_id);
-            setSelectedReport(detailResponse as EvaluationReport);
+            setSelectedReport(detailResponse);
         } catch (error) {
             console.error('Failed to fetch report detail:', error);
             // 如果获取详情失败，使用基本信息
-            setSelectedReport(report as EvaluationReport);
+            setSelectedReport(report);
         }
         setViewMode('detail');
     };
@@ -421,6 +421,15 @@ const Reports: React.FC = () => {
 
         return (
             <div>
+                {selectedReport.warning && (
+                    <Alert
+                        type="warning"
+                        showIcon
+                        message="部分样本执行失败"
+                        description={selectedReport.warning.message}
+                        style={{ marginBottom: 16 }}
+                    />
+                )}
                 <Card>
                     <Row gutter={16}>
                         <Col span={16}>

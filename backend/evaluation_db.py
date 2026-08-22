@@ -22,6 +22,10 @@ from flask_cors import cross_origin
 from werkzeug.utils import secure_filename
 import pandas as pd
 import numpy as np
+from services.dataset_manager import MAX_DATASET_BYTES, normalize_dataset_bytes
+from services.rag_connection_service import RagConnectionService
+from services.rag_providers.factory import create_provider
+from utils.admin_auth import require_admin_token
 from db import (
     get_config_manager,
     get_dataset_manager,
@@ -44,6 +48,7 @@ dataset_manager = None
 task_manager = None
 report_manager = None
 metrics_manager = None
+_stale_tasks_recovered = False
 
 
 class NaNSafeJSONEncoder(json.JSONEncoder):
@@ -71,6 +76,7 @@ def init_services():
     global dataset_manager
     global task_manager
     global config_manager
+    global _stale_tasks_recovered
     if not config_manager:
         config_manager = get_config_manager()
         logger.info("ConfigManager initialized")
@@ -93,6 +99,18 @@ def init_services():
         except Exception as e:
             logger.warning(f"Failed to initialize EvaluationService: {e}")
             evaluation_service = None
+    if task_manager and not _stale_tasks_recovered:
+        for stale in task_manager.get_tasks(limit=10000, status="running").get(
+            "tasks", []
+        ):
+            task_manager.update_task_status(
+                stale["id"],
+                "failed",
+                error_message="Task interrupted by application restart",
+                outcome="failed",
+                interrupted_at=datetime.now().isoformat(),
+            )
+        _stale_tasks_recovered = True
 
 
 def init_evaluation_service(force_reload=False):
@@ -312,125 +330,57 @@ def list_datasets():
 @evaluation_bp.route("/datasets", methods=["POST"])
 @cross_origin()
 def upload_dataset():
-    """上传评测数据集，并在后台解析样本元数据。"""
+    """Upload and normalize one evaluation dataset before making it usable."""
+    init_services()
+    if "file" not in request.files:
+        return jsonify({"error": {"category": "validation", "message": "No file provided", "retryable": False}}), 400
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": {"category": "validation", "message": "No file selected", "retryable": False}}), 400
+    content = file.read(MAX_DATASET_BYTES + 1)
+    if len(content) > MAX_DATASET_BYTES:
+        return jsonify({"error": {"category": "validation", "message": "数据集文件不能超过 10 MB", "retryable": False}}), 413
+    dataset_id = str(uuid.uuid4())
+    suffix = Path(file.filename).suffix.lower()
+    storage_dir = Path(os.getenv("DATASETS_DIR", "tmp/datasets"))
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    original_path = storage_dir / f"{dataset_id}{suffix}"
+    normalized_path = storage_dir / f"{dataset_id}.json"
     try:
-        init_services()
-        if "file" not in request.files:
-            return jsonify({"error": "No file provided"}), 400
-
-        file = request.files["file"]
-        if not file.filename:
-            return jsonify({"error": "No file selected"}), 400
-
-        dataset_name = request.form.get("name", file.filename)
-        description = request.form.get("description", "")
-        file_content = file.read()
-        file_size = len(file_content)
-        dataset_id = str(uuid.uuid4())
-        file_type = Path(file.filename).suffix.lower()
-        if file_type not in {".json", ".jsonl", ".csv", ".xlsx", ".xls"}:
-            return jsonify({"error": f"Unsupported file format: {file_type}"}), 400
-
-        storage_path = Path("tmp/datasets")
-        storage_path.mkdir(parents=True, exist_ok=True)
-        file_path = storage_path / f"{dataset_id}{file_type}"
-        file_path.write_bytes(file_content)
-
-        dataset_data = {
+        samples, metadata = normalize_dataset_bytes(content, file.filename)
+        original_path.write_bytes(content)
+        normalized_path.write_text(json.dumps(samples, ensure_ascii=False, indent=2), encoding="utf-8")
+        data = {
             "id": dataset_id,
-            "name": dataset_name,
-            "description": description,
+            "name": request.form.get("name") or file.filename,
+            "description": request.form.get("description", ""),
             "file_name": secure_filename(file.filename),
-            "file_type": file_type,
-            "file_size": file_size,
-            "storage_path": str(file_path),
-            "num_samples": 0,
-            "has_reference": False,
-            "has_contexts": False,
-            "sample_fields": [],
-            "status": "processing",
-            "progress": 0,
+            "file_type": metadata["file_type"],
+            "file_size": len(content),
+            "storage_path": str(original_path),
+            "normalized_storage_path": str(normalized_path),
+            "normalization_status": "completed",
+            "num_samples": metadata["num_samples"],
+            "has_reference": metadata["has_reference"],
+            "has_contexts": metadata["has_contexts"],
+            "sample_fields": metadata["sample_fields"],
+            "status": "completed",
+            "progress": 100,
             "created_by": request.headers.get("X-User-Id", "anonymous"),
         }
-        dataset_manager.create_dataset(dataset_data)
-
-        def process_async():
-            try:
-                if file_type in {".json", ".jsonl"}:
-                    decoded = file_content.decode("utf-8")
-                    try:
-                        samples = json.loads(decoded)
-                        if isinstance(samples, dict):
-                            samples = [samples]
-                    except json.JSONDecodeError:
-                        samples = [
-                            json.loads(line)
-                            for line in decoded.splitlines()
-                            if line.strip()
-                        ]
-                elif file_type == ".csv":
-                    from io import BytesIO
-
-                    samples = pd.read_csv(BytesIO(file_content)).to_dict("records")
-                else:
-                    from io import BytesIO
-
-                    samples = pd.read_excel(BytesIO(file_content)).to_dict("records")
-
-                if not isinstance(samples, list):
-                    raise ValueError(
-                        "Dataset root must be a JSON array or tabular records"
-                    )
-
-                num_samples = len(samples)
-                has_reference = any(
-                    "expected_answer" in sample or "reference" in sample
-                    for sample in samples
-                    if isinstance(sample, dict)
-                )
-                has_contexts = any(
-                    "contexts" in sample or "reference_contexts" in sample
-                    for sample in samples
-                    if isinstance(sample, dict)
-                )
-                dataset_manager.update_dataset_status(
-                    dataset_id,
-                    "completed",
-                    progress=100,
-                    num_samples=num_samples,
-                    has_reference=has_reference,
-                    has_contexts=has_contexts,
-                )
-            except Exception as error:
-                logger.exception("Failed to process dataset %s", dataset_id)
-                dataset_manager.update_dataset_status(
-                    dataset_id, "failed", error_message=str(error)
-                )
-
-        import threading
-
-        thread = threading.Thread(target=process_async, daemon=True)
-        thread.start()
-        return (
-            jsonify(
-                {
-                    "id": dataset_id,
-                    "name": dataset_name,
-                    "description": description,
-                    "file_name": secure_filename(file.filename),
-                    "file_type": file_type,
-                    "num_samples": 0,
-                    "status": "processing",
-                    "progress": 0,
-                    "created_at": datetime.now().isoformat(),
-                }
-            ),
-            202,
-        )
-    except Exception as error:
+        dataset_manager.create_dataset(data)
+        return jsonify(data), 201
+    except TypeError as exc:
+        return jsonify({"error": {"category": "validation", "message": str(exc), "retryable": False}}), 415
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        return jsonify({"error": {"category": "validation", "message": str(exc), "retryable": False}}), 422
+    except Exception as exc:
         logger.exception("Failed to upload dataset")
-        return jsonify({"error": f"Failed to upload dataset: {error}"}), 500
-
+        return jsonify({"error": {"category": "upstream", "message": "数据集处理失败", "retryable": False}}), 500
+    finally:
+        if not normalized_path.exists():
+            for candidate in (original_path, normalized_path):
+                candidate.unlink(missing_ok=True)
 
 @evaluation_bp.route("/datasets/<dataset_id>", methods=["GET"])
 @cross_origin()
@@ -733,336 +683,318 @@ def delete_datasets_batch():
 @evaluation_bp.route("/tasks", methods=["POST"])
 @cross_origin()
 def create_evaluation_task():
-    """创建评测任务"""
-    logger.info("🚀 收到创建评测任务请求")
-    try:
-        init_services()
-        data = request.get_json()
-        logger.info(f"📝 任务创建参数: {json.dumps(data, ensure_ascii=False)}")
-        required_fields = ["chat_id", "dataset_id", "metrics"]
-        for field in required_fields:
-            if field not in data:
-                logger.warning(f"⚠️  缺少必填字段: {field}")
-                return (jsonify({"error": f"Missing required field: {field}"}), 400)
-        logger.info("✅ 参数验证通过")
-        task_id = str(uuid.uuid4())
-        task_data = {
-            "id": task_id,
-            "name": data.get(
-                "name", f"Evaluation Task {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            ),
-            "chat_id": data["chat_id"],
-            "dataset_id": data["dataset_id"],
-            "metrics": data["metrics"],
-            "batch_size": data.get("batch_size", 10),
-            "llm_model": data.get("llm_model"),
-            "embedding_model": data.get("embedding_model"),
-            "created_by": request.headers.get("X-User-Id", "anonymous"),
-        }
-        task_manager.create_task(task_data)
-        if evaluation_service:
-            import threading
+    """Create a legacy RAGFlow or provider-aware evaluation task."""
+    init_services()
+    data = request.get_json(silent=True) or {}
+    if not data.get("dataset_id") or not data.get("metrics"):
+        return jsonify({"error": {"category": "validation", "message": "dataset_id 和 metrics 为必填项", "retryable": False}}), 400
+    if bool(data.get("rag_target")) == bool(data.get("chat_id")):
+        return jsonify({"error": {"category": "validation", "message": "rag_target 与 legacy chat_id 必须且只能提供一个", "retryable": False}}), 400
+    dataset = dataset_manager.get_dataset(data["dataset_id"])
+    if not dataset or dataset.get("status") != "completed" or dataset.get("normalization_status") not in {None, "completed"}:
+        return jsonify({"error": {"category": "validation", "message": "数据集不存在或尚未完成归一化", "retryable": False}}), 400
 
-            thread = threading.Thread(target=run_evaluation_task, args=(task_id,))
-            thread.daemon = True
-            thread.start()
-        else:
-            task_manager.update_task_status(
-                task_id, "failed", error_message="Evaluation service not available"
-            )
-        return (
-            jsonify(
-                {
-                    "id": task_id,
-                    "name": task_data["name"],
-                    "chat_id": data["chat_id"],
-                    "dataset_id": data["dataset_id"],
-                    "metrics": data["metrics"],
-                    "batch_size": data["batch_size"],
-                    "status": "pending",
-                    "created_at": datetime.now().isoformat(),
-                }
-            ),
-            201,
-        )
-    except Exception as e:
-        logger.error(f"Failed to create evaluation task: {str(e)}")
-        return (jsonify({"error": "Failed to create evaluation task"}), 500)
+    if data.get("rag_target"):
+        target = data["rag_target"]
+        connection_id = target.get("connection_id")
+        connection = RagConnectionService().get_connection(connection_id, include_secret=True)
+        if not connection or not connection.get("enabled"):
+            return jsonify({"error": {"category": "validation", "message": "RAG connection 不存在或未启用", "retryable": False}}), 400
+        provider = create_provider(connection, connection.get("api_key"))
+        try:
+            assistants = _run_async(provider.list_assistants(limit=100))
+            assistant = next((item for item in assistants if item.id == target.get("assistant_id")), None)
+            if not assistant or not assistant.selectable or not assistant.knowledge_base_selection_mode:
+                return jsonify({"error": {"category": "validation", "message": "Agent 不可用或知识库模式未知，请刷新资源", "retryable": False}}), 400
+            mode = assistant.knowledge_base_selection_mode
+            kb_ids = [str(x) for x in target.get("knowledge_base_ids") or []]
+            if mode == "selected" and not kb_ids:
+                return jsonify({"error": {"category": "validation", "message": "selected 模式至少需要一个知识库", "retryable": False}}), 400
+            if mode in {"all", "none"} and kb_ids:
+                return jsonify({"error": {"category": "validation", "message": f"{mode} 模式不能手动提交知识库", "retryable": False}}), 400
+            kb_names = []
+            if kb_ids:
+                resources = _run_async(provider.list_knowledge_bases(assistant_id=assistant.id, limit=100))
+                mapping = {item.id: item for item in resources if item.selectable}
+                if any(kb_id not in mapping for kb_id in kb_ids):
+                    return jsonify({"error": {"category": "validation", "message": "知识库不属于当前连接或 Agent 无权访问", "retryable": False}}), 400
+                kb_names = [mapping[kb_id].name for kb_id in kb_ids]
+        finally:
+            _run_async(provider.close())
+        provider_name = connection["provider"]
+        assistant_id = assistant.id
+        task_source = {
+            "rag_provider": provider_name,
+            "rag_connection_id": connection_id,
+            "rag_connection_revision": connection.get("revision"),
+            "assistant_id": assistant_id,
+            "assistant_name_snapshot": assistant.name,
+            "knowledge_base_ids": kb_ids,
+            "knowledge_base_names_snapshot": kb_names,
+            "knowledge_base_selection_mode_snapshot": mode,
+            "connection_name_snapshot": connection.get("name"),
+            "connection_base_url_snapshot": connection.get("base_url") or connection.get("api_url"),
+            "source_legacy": False,
+        }
+    else:
+        assistant_id = str(data["chat_id"])
+        task_source = {
+            "rag_provider": "ragflow",
+            "rag_connection_id": "ragflow-default",
+            "rag_connection_revision": 1,
+            "assistant_id": assistant_id,
+            "assistant_name_snapshot": assistant_id,
+            "knowledge_base_ids": [],
+            "knowledge_base_names_snapshot": [],
+            "knowledge_base_selection_mode_snapshot": "selected",
+            "connection_name_snapshot": "RAGFlow",
+            "connection_base_url_snapshot": os.getenv("RAGFLOW_BASE_URL", "http://localhost:9380"),
+            "source_legacy": True,
+        }
+
+    task_id = str(uuid.uuid4())
+    task_data = {
+        "id": task_id,
+        "name": data.get("name") or f"Evaluation Task {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "chat_id": assistant_id,
+        "dataset_id": data["dataset_id"],
+        "metrics": data["metrics"],
+        "batch_size": int(data.get("batch_size", 10)),
+        "llm_model": data.get("llm_model"),
+        "embedding_model": data.get("embedding_model"),
+        "created_by": request.headers.get("X-User-Id", "anonymous"),
+        **task_source,
+    }
+    task_manager.create_task(task_data)
+    import threading
+    worker = threading.Thread(target=run_evaluation_task, args=(task_id,), daemon=True)
+    worker.start()
+    return jsonify({**task_data, "status": "pending", "progress": 0, "created_at": datetime.now().isoformat()}), 201
 
 
 def run_evaluation_task(task_id: str):
-    """Execute an evaluation task in a worker thread."""
     task = task_manager.get_task(task_id)
     if not task:
-        logger.error("Task %s not found", task_id)
         return
-
-    samples = dataset_manager.get_dataset_samples(task["dataset_id"])
-    if not samples:
-        task_manager.update_task_status(
-            task_id, "failed", error_message="No samples found in dataset"
-        )
+    try:
+        samples = dataset_manager.get_dataset_samples(task["dataset_id"])
+    except Exception as exc:
+        task_manager.update_task_status(task_id, "failed", error_message=str(exc), outcome="failed")
         return
+    task_manager.update_task_status(task_id, "running", total_samples=len(samples), processed_samples=0, progress=0)
+    connection = RagConnectionService().get_connection(task.get("rag_connection_id") or "ragflow-default", include_secret=True)
+    if not connection:
+        task_manager.update_task_status(task_id, "failed", error_message="RAG connection not found", outcome="failed")
+        return
+    if task.get("rag_connection_revision") and connection.get("revision") != task.get("rag_connection_revision"):
+        task_manager.update_task_status(task_id, "failed", error_message="RAG connection revision changed before execution", outcome="failed")
+        return
+    provider = create_provider(connection, connection.get("api_key"))
 
-    task_manager.update_task_status(
-        task_id,
-        "running",
-        total_samples=len(samples),
-        processed_samples=0,
-        progress=0,
-    )
+    def progress(value):
+        current = task_manager.get_task(task_id)
+        if current and current.get("status") == "cancelled":
+            return
+        task_manager.update_task_status(task_id, "running", progress=max(0, min(99, int(value))), processed_samples=int(max(0, min(99, int(value))) / 100 * len(samples)))
 
-    def progress_callback(progress: int):
-        progress = max(0, min(99, int(progress)))
-        processed_samples = int(progress / 100 * len(samples))
-        task_manager.update_task_status(
-            task_id,
-            "running",
-            processed_samples=processed_samples,
-            progress=progress,
-        )
+    def cancelled():
+        current = task_manager.get_task(task_id)
+        return not current or current.get("status") == "cancelled"
+
+    def sample_started(index, session_id, sample):
+        attempts = [row for row in task_manager.db.get_final_sample_runs(task_id) if row["sample_index"] == index]
+        return task_manager.db.create_sample_run({"task_id": task_id, "sample_index": index, "attempt": len(attempts) + 1, "session_id": session_id, "question": str(sample.get("question") or sample.get("user_input") or "")})
+
+    def sample_completed(run_id, result):
+        if run_id is not None:
+            task_manager.db.complete_sample_run(run_id, result)
 
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        evaluation_result = loop.run_until_complete(
-            _run_rag_evaluation(task_id, task, samples, progress_callback)
-        )
+        from services.evaluation_service import evaluation_service as scoring_service
+        evaluation_result = loop.run_until_complete(scoring_service.evaluate_with_provider(
+            provider=provider,
+            assistant_id=task.get("assistant_id") or task["chat_id"],
+            knowledge_base_ids=task.get("knowledge_base_ids") or [],
+            knowledge_base_selection_mode=task.get("knowledge_base_selection_mode_snapshot") or "selected",
+            dataset_id=task["dataset_id"],
+            selected_metrics=task["metrics"],
+            dataset_samples=samples,
+            progress_callback=progress,
+            sample_started=sample_started,
+            sample_completed=sample_completed,
+            cancellation_check=cancelled,
+        ))
         metadata = evaluation_result.get("evaluation_metadata", {})
-        report_data = {
+        scored = int(metadata.get("success_count", 0))
+        failed = int(metadata.get("failed_count", len(samples) - scored))
+        if scored <= 0:
+            raise RuntimeError("没有任何样本获得完整可评分回答")
+        warning = {"code": "partial_sample_failure", "message": f"{failed} 个样本执行失败", "failed_samples": failed} if failed else None
+        source_snapshot = {
+            "provider": task.get("rag_provider", "ragflow"),
+            "connection_id": task.get("rag_connection_id"),
+            "connection_revision": task.get("rag_connection_revision"),
+            "connection_name": task.get("connection_name_snapshot") or "RAGFlow",
+            "connection_base_url": task.get("connection_base_url_snapshot"),
+            "assistant_id": task.get("assistant_id") or task["chat_id"],
+            "assistant_name": task.get("assistant_name_snapshot") or task["chat_id"],
+            "knowledge_base_selection_mode": task.get("knowledge_base_selection_mode_snapshot"),
+            "knowledge_bases": [{"id": kid, "name": name} for kid, name in zip(task.get("knowledge_base_ids") or [], task.get("knowledge_base_names_snapshot") or [])],
+            "legacy": bool(task.get("source_legacy")),
+        }
+        report_manager.save_report({
             "task_id": task_id,
             "chat_id": task["chat_id"],
+            "assistant_id": task.get("assistant_id"),
             "dataset_id": task["dataset_id"],
             "overall_scores": evaluation_result.get("overall_scores", {}),
             "detailed_scores": evaluation_result.get("detailed_scores", []),
-            "evaluation_metadata": {
-                **metadata,
-                "metrics": task["metrics"],
-                "total_samples": len(samples),
-            },
-        }
-        report_id = report_manager.save_report(report_data)
-        logger.info("Evaluation report saved: %s", report_id)
-        task_manager.update_task_status(
-            task_id,
-            "completed",
-            progress=100,
-            processed_samples=len(samples),
-        )
-    except Exception as error:
+            "evaluation_metadata": {**metadata, "metrics": task["metrics"]},
+            "rag_provider": task.get("rag_provider", "ragflow"),
+            "rag_connection_id": task.get("rag_connection_id"),
+            "knowledge_base_ids": task.get("knowledge_base_ids") or [],
+            "source_snapshot": source_snapshot,
+            "scored_sample_count": scored,
+            "failed_sample_count": failed,
+            "total_sample_count": len(samples),
+            "success_rate": scored / len(samples),
+            "warning": warning,
+        })
+        task_manager.update_task_status(task_id, "completed", progress=100, processed_samples=len(samples), scored_sample_count=scored, failed_sample_count=failed, has_warnings=bool(failed), outcome="partially_succeeded" if failed else "succeeded")
+    except asyncio.CancelledError:
+        task_manager.update_task_status(task_id, "cancelled", outcome="cancelled")
+    except Exception as exc:
         logger.exception("Evaluation task failed: %s", task_id)
-        task_manager.update_task_status(task_id, "failed", error_message=str(error))
+        task_manager.update_task_status(task_id, "failed", error_message=str(exc), outcome="failed")
     finally:
+        loop.run_until_complete(provider.close())
         loop.close()
         asyncio.set_event_loop(None)
-
-
-async def _run_rag_evaluation(
-    task_id: str, task: dict, samples: list, progress_callback=None
-) -> dict:
-    """运行 RAGAS 评测"""
-    try:
-        from services.evaluation_service import evaluation_service
-
-        if not evaluation_service:
-            raise Exception("Evaluation service not available")
-        else:
-            result = await evaluation_service.evaluate_knowledge_base(
-                chat_id=task["chat_id"],
-                dataset_id=task["dataset_id"],
-                selected_metrics=task["metrics"],
-                dataset_samples=samples,
-                batch_size=task.get("batch_size", 10),
-                progress_callback=progress_callback,
-            )
-            logger.info("✅ RAGAS 评测成功完成")
-            return result
-    except Exception as e:
-        logger.error(f"❌ RAGAS 评测失败: {str(e)}")
-        import traceback
-
-        logger.error(f"🔍 详细错误信息: {traceback.format_exc()}")
-        raise
 
 
 @evaluation_bp.route("/tasks", methods=["GET"])
 @cross_origin()
 def list_tasks():
-    """获取任务列表"""
-    logger.info("📋 收到获取任务列表请求")
-    try:
-        init_services()
-        limit = int(request.args.get("limit", 20))
-        offset = int(request.args.get("offset", 0))
-        status = request.args.get("status")
-        logger.info(f"🔍 查询任务参数: limit={limit}, offset={offset}, status={status}")
-        result = task_manager.get_tasks(limit, offset, status)
-        task_count = len(result.get("tasks", []))
-        logger.info(
-            f"✅ 成功获取任务列表: 共 {task_count} 个任务 (总数: {result.get('total', 0)})"
-        )
-        if task_count > 0:
-            for task in result["tasks"][:3]:
-                logger.info(
-                    f"  - 任务 {task['id'][:8]}: {task['name']} | 状态: {task['status']} | 进度: {task.get('progress', 0)}%"
-                )
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"❌ 获取任务列表失败: {str(e)}")
-        import traceback
-
-        logger.error(f"📋 详细错误信息: {traceback.format_exc()}")
-        return (jsonify({"error": "Failed to list tasks"}), 500)
+    init_services()
+    result = task_manager.get_tasks(
+        limit=min(int(request.args.get("limit", 20)), 100),
+        offset=max(int(request.args.get("offset", 0)), 0),
+        status=request.args.get("status"),
+        rag_provider=request.args.get("rag_provider"),
+        rag_connection_id=request.args.get("rag_connection_id"),
+    )
+    for task in result["tasks"]:
+        dataset = dataset_manager.get_dataset(task["dataset_id"])
+        task["dataset_name"] = dataset.get("name") if dataset else None
+        task["source_snapshot"] = {
+            "provider": task.get("rag_provider", "ragflow"),
+            "connection_id": task.get("rag_connection_id"),
+            "connection_revision": task.get("rag_connection_revision"),
+            "connection_name": task.get("connection_name_snapshot") or "RAGFlow",
+            "connection_base_url": task.get("connection_base_url_snapshot"),
+            "assistant_id": task.get("assistant_id") or task.get("chat_id"),
+            "assistant_name": task.get("assistant_name_snapshot") or task.get("chat_id"),
+            "knowledge_base_selection_mode": task.get("knowledge_base_selection_mode_snapshot"),
+            "knowledge_bases": [{"id": kid, "name": name} for kid, name in zip(task.get("knowledge_base_ids") or [], task.get("knowledge_base_names_snapshot") or [])],
+            "legacy": bool(task.get("source_legacy")),
+        }
+    return jsonify(result)
 
 
 @evaluation_bp.route("/tasks/<task_id>", methods=["GET"])
 @cross_origin()
 def get_task_status(task_id: str):
-    """获取任务状态"""
-    try:
-        init_services()
-        task = task_manager.get_task(task_id)
-        if not task:
-            return (jsonify({"error": "Task not found"}), 404)
-        else:
-            return jsonify(task)
-    except Exception as e:
-        logger.error(f"Failed to get task status: {str(e)}")
-        return (jsonify({"error": "Failed to get task status"}), 500)
+    init_services()
+    task = task_manager.get_task(task_id)
+    if not task:
+        return jsonify({"error": {"category": "not_found", "message": "Task not found", "retryable": False}}), 404
+    dataset = dataset_manager.get_dataset(task["dataset_id"])
+    task["dataset_name"] = dataset.get("name") if dataset else None
+    task["sample_runs"] = task_manager.db.get_final_sample_runs(task_id)
+    return jsonify(task)
 
 
 @evaluation_bp.route("/reports/<task_id>", methods=["GET"])
 @cross_origin()
 def get_evaluation_report(task_id: str):
-    """获取并扩展单个评测报告。"""
-    try:
-        init_services()
-        report = report_manager.get_report(task_id)
-        if not report:
-            return jsonify({"error": "Report not found"}), 404
-
+    init_services()
+    report = report_manager.get_report(task_id)
+    if not report:
         task = task_manager.get_task(task_id)
-        dataset = dataset_manager.get_dataset(task["dataset_id"]) if task else None
-        detailed_scores = report.get("detailed_scores", [])
-        metric_scores = report.get("overall_scores", {})
-        means = [
-            score["mean"]
-            for score in metric_scores.values()
-            if isinstance(score, dict) and isinstance(score.get("mean"), (int, float))
-        ]
-        overall_score = sum(means) / len(means) if means else 0
-        metadata = report.get("evaluation_metadata", {})
-        total_count = metadata.get(
-            "total_samples", metadata.get("num_samples", len(detailed_scores))
-        )
-        success_count = metadata.get("success_count", 0)
-        success_rate = success_count / total_count * 100 if total_count else 0
-
-        display_names = {
-            "faithfulness": "忠实度",
-            "answer_correctness": "答案正确性",
-            "context_precision": "上下文精确度",
-            "context_recall": "上下文召回率",
-            "answer_relevancy": "答案相关性",
-        }
-        recommendations = [
-            f"{display_names.get(name, name)}较低 ({score['mean']:.2f})，建议优化相关策略"
-            for name, score in metric_scores.items()
-            if isinstance(score, dict)
-            and isinstance(score.get("mean"), (int, float))
-            and score["mean"] < 0.6
-        ] or ["整体表现良好，继续保持"]
-
-        low_score_samples = []
-        for sample in detailed_scores:
-            numeric_scores = {
-                key: value
-                for key, value in sample.items()
-                if key
-                not in {"user_input", "actual_answer", "expected_answer", "contexts"}
-                and isinstance(value, (int, float))
-            }
-            if numeric_scores:
-                average = sum(numeric_scores.values()) / len(numeric_scores)
-                if average < 0.6:
-                    lowest_name = min(numeric_scores, key=numeric_scores.get)
-                    low_score_samples.append(
-                        {
-                            "question": sample.get("user_input", "Unknown")[:100],
-                            "score": round(average, 2),
-                            "issue": f"{display_names.get(lowest_name, lowest_name)} 得分低",
-                        }
-                    )
-
-        return jsonify(
-            {
-                "task_id": task_id,
-                "kb_name": task.get("name", "Unknown") if task else "Unknown",
-                "dataset_name": (
-                    dataset.get("name", "Unknown") if dataset else "Unknown"
-                ),
-                "overall_score": round(overall_score, 4),
-                "metric_scores": metric_scores,
-                "summary": f"评测完成，共 {total_count} 个样本，成功率 {success_rate:.1f}%",
-                "recommendations": recommendations,
-                "lowScoreSamples": low_score_samples[:5],
-                "created_at": report.get("created_at", ""),
-                "createdAt": report.get("created_at", ""),
-                "detailed_scores": detailed_scores,
-                "evaluation_metadata": metadata,
-                "totalSamples": total_count,
-            }
-        )
-    except Exception as error:
-        logger.exception("Failed to get evaluation report")
-        return jsonify({"error": f"Failed to get evaluation report: {error}"}), 500
+        status = 409 if task and task.get("status") in {"pending", "running", "failed", "cancelled"} else 404
+        return jsonify({"error": {"category": "conflict" if status == 409 else "not_found", "message": "该任务没有最终评测报告", "retryable": False}}), status
+    dataset = dataset_manager.get_dataset(report["dataset_id"])
+    scores = report.get("overall_scores") or {}
+    means = [value.get("mean") for value in scores.values() if isinstance(value, dict) and isinstance(value.get("mean"), (int, float))]
+    source = report.get("source_snapshot") or {}
+    return jsonify({
+        "task_id": task_id,
+        "rag_provider": report.get("rag_provider", "ragflow"),
+        "rag_connection_id": report.get("rag_connection_id"),
+        "assistant_id": report.get("assistant_id"),
+        "knowledge_base_ids": report.get("knowledge_base_ids") or [],
+        "source_snapshot": source,
+        "kb_name": ((source.get("knowledge_bases") or [{}])[0].get("name") if source.get("knowledge_bases") else source.get("assistant_name", "Unknown")),
+        "dataset_id": report["dataset_id"],
+        "dataset_name": dataset.get("name", "Unknown") if dataset else "Unknown",
+        "overall_score": round(sum(means) / len(means), 4) if means else 0,
+        "metric_scores": scores,
+        "summary": f"评测完成，共 {report.get('total_sample_count', 0)} 个样本，成功率 {report.get('success_rate', 0) * 100:.1f}%",
+        "recommendations": [],
+        "created_at": report.get("created_at", ""),
+        "createdAt": report.get("created_at", ""),
+        "detailed_scores": report.get("detailed_scores") or [],
+        "evaluation_metadata": report.get("evaluation_metadata") or {},
+        "totalSamples": report.get("total_sample_count", 0),
+        "scoredSamples": report.get("scored_sample_count", 0),
+        "failedSamples": report.get("failed_sample_count", 0),
+        "successRate": round(report.get("success_rate", 0) * 100, 1),
+        "warning": report.get("warning"),
+    })
 
 
 @evaluation_bp.route("/reports", methods=["GET"])
 @cross_origin()
 def list_reports():
-    """获取报告列表"""
-    try:
-        init_services()
-        limit = int(request.args.get("limit", 20))
-        offset = int(request.args.get("offset", 0))
-        result = report_manager.get_reports(limit, offset)
-        enriched_reports = []
-        for report in result.get("reports", []):
-            task_id = report.get("task_id")
-            task = task_manager.get_task(task_id)
-            dataset = dataset_manager.get_dataset(task["dataset_id"]) if task else None
-            overall_scores = report.get("overall_scores", {})
-            valid_scores = []
-            for _, scores in overall_scores.items():
-                if isinstance(scores, dict) and "mean" in scores:
-                    valid_scores.append(scores["mean"])
-            overall_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0
-            metadata = report.get("evaluation_metadata", {})
-            success_count = metadata.get("success_count", 0)
-            total_count = metadata.get("num_samples", metadata.get("total_count", 1))
-            success_rate = success_count / total_count * 100 if total_count > 0 else 0
-            enriched_reports.append(
-                {
-                    "task_id": task_id,
-                    "kb_name": task.get("name", "Unknown") if task else "Unknown",
-                    "dataset_name": (
-                        dataset.get("name", "Unknown") if dataset else "Unknown"
-                    ),
-                    "overall_score": round(overall_score, 4),
-                    "totalSamples": total_count,
-                    "successRate": round(success_rate, 1),
-                    "createdAt": report.get("created_at", ""),
-                    "metric_scores": overall_scores,
-                }
-            )
-        return jsonify(enriched_reports)
-    except Exception as e:
-        logger.error(f"Failed to list reports: {str(e)}")
-        import traceback
-
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return (jsonify({"error": "Failed to list reports"}), 500)
+    init_services()
+    result = report_manager.get_reports(
+        limit=min(int(request.args.get("limit", 20)), 100),
+        offset=max(int(request.args.get("offset", 0)), 0),
+        rag_provider=request.args.get("rag_provider"),
+        rag_connection_id=request.args.get("rag_connection_id"),
+        assistant_id=request.args.get("assistant_id"),
+        knowledge_base_id=request.args.get("knowledge_base_id"),
+        start_date=request.args.get("start_date"),
+        end_date=request.args.get("end_date"),
+    )
+    summaries = []
+    for report in result["reports"]:
+        dataset = dataset_manager.get_dataset(report["dataset_id"])
+        scores = report.get("overall_scores") or {}
+        means = [value.get("mean") for value in scores.values() if isinstance(value, dict) and isinstance(value.get("mean"), (int, float))]
+        source = report.get("source_snapshot") or {}
+        summaries.append({
+            "task_id": report["task_id"],
+            "rag_provider": report.get("rag_provider", "ragflow"),
+            "rag_connection_id": report.get("rag_connection_id"),
+            "assistant_id": report.get("assistant_id"),
+            "knowledge_base_ids": report.get("knowledge_base_ids") or [],
+            "source_snapshot": source,
+            "kb_name": ((source.get("knowledge_bases") or [{}])[0].get("name") if source.get("knowledge_bases") else source.get("assistant_name", "Unknown")),
+            "dataset_id": report["dataset_id"],
+            "dataset_name": dataset.get("name", "Unknown") if dataset else "Unknown",
+            "overall_score": round(sum(means) / len(means), 4) if means else 0,
+            "metric_scores": scores,
+            "totalSamples": report.get("total_sample_count", 0),
+            "scoredSamples": report.get("scored_sample_count", 0),
+            "failedSamples": report.get("failed_sample_count", 0),
+            "successRate": round(report.get("success_rate", 0) * 100, 1),
+            "warning": report.get("warning"),
+            "createdAt": report.get("created_at", ""),
+        })
+    return jsonify({"reports": summaries, "total": result["total"], "offset": result["offset"], "limit": result["limit"]})
 
 
 @evaluation_bp.route("/reports/<task_id>", methods=["DELETE"])
@@ -1105,6 +1037,111 @@ def delete_reports_batch():
     except Exception as e:
         logger.error(f"Failed to batch delete reports: {str(e)}")
         return (jsonify({"error": "Failed to batch delete reports"}), 500)
+
+
+def _run_async(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def _connection_provider(connection_id: str):
+    service = RagConnectionService()
+    connection = service.get_connection(connection_id, include_secret=True)
+    if not connection:
+        raise KeyError("RAG connection not found")
+    return connection, create_provider(connection, connection.get("api_key"))
+
+
+@evaluation_bp.route("/rag-connections", methods=["GET"])
+@cross_origin()
+def list_rag_connections():
+    return jsonify({"connections": RagConnectionService().list_connections()})
+
+
+@evaluation_bp.route("/rag-connections", methods=["POST"])
+@cross_origin()
+@require_admin_token
+def create_rag_connection():
+    try:
+        return jsonify(RagConnectionService().create(request.get_json(silent=True) or {})), 201
+    except ValueError as exc:
+        status = 409 if "仅支持一个" in str(exc) else 400
+        return jsonify({"error": {"category": "conflict" if status == 409 else "validation", "message": str(exc), "retryable": False}}), status
+    except Exception as exc:
+        logger.exception("Failed to create RAG connection")
+        return jsonify({"error": {"category": "validation", "message": str(exc), "retryable": False}}), 400
+
+
+@evaluation_bp.route("/rag-connections/<connection_id>", methods=["GET"])
+@cross_origin()
+def get_rag_connection(connection_id):
+    connection = RagConnectionService().get_connection(connection_id)
+    if not connection:
+        return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
+    return jsonify(connection)
+
+
+@evaluation_bp.route("/rag-connections/<connection_id>", methods=["PUT"])
+@cross_origin()
+@require_admin_token
+def update_rag_connection(connection_id):
+    if connection_id == "ragflow-default":
+        return jsonify({"error": {"category": "validation", "message": "RAGFlow default connection is environment-managed", "retryable": False}}), 400
+    try:
+        connection = RagConnectionService().update(connection_id, request.get_json(silent=True) or {})
+        if not connection:
+            return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
+        return jsonify(connection)
+    except Exception as exc:
+        return jsonify({"error": {"category": "validation", "message": str(exc), "retryable": False}}), 400
+
+
+@evaluation_bp.route("/rag-connections/<connection_id>/test", methods=["POST"])
+@cross_origin()
+@require_admin_token
+def test_rag_connection(connection_id):
+    try:
+        result = _run_async(RagConnectionService().validate(connection_id))
+        if result is None:
+            return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": {"category": "upstream", "message": str(exc), "retryable": False}}), 502
+
+
+@evaluation_bp.route("/rag-connections/<connection_id>/knowledge-bases", methods=["GET"])
+@cross_origin()
+def list_connection_knowledge_bases(connection_id):
+    try:
+        connection, provider = _connection_provider(connection_id)
+        try:
+            items = _run_async(provider.list_knowledge_bases(search=request.args.get("search"), assistant_id=request.args.get("assistant_id"), offset=int(request.args.get("offset", 0)), limit=min(int(request.args.get("limit", 100)), 100)))
+        finally:
+            _run_async(provider.close())
+        return jsonify({"provider": connection["provider"], "connection_id": connection_id, "items": [item.to_dict() for item in items], "total": len(items), "offset": int(request.args.get("offset", 0)), "limit": min(int(request.args.get("limit", 100)), 100)})
+    except KeyError:
+        return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
+    except Exception as exc:
+        return jsonify({"error": {"category": "upstream", "message": str(exc), "retryable": False}}), 502
+
+
+@evaluation_bp.route("/rag-connections/<connection_id>/assistants", methods=["GET"])
+@cross_origin()
+def list_connection_assistants(connection_id):
+    try:
+        connection, provider = _connection_provider(connection_id)
+        try:
+            items = _run_async(provider.list_assistants(search=request.args.get("search"), offset=int(request.args.get("offset", 0)), limit=min(int(request.args.get("limit", 100)), 100)))
+        finally:
+            _run_async(provider.close())
+        return jsonify({"provider": connection["provider"], "connection_id": connection_id, "items": [item.to_dict() for item in items], "total": len(items), "offset": int(request.args.get("offset", 0)), "limit": min(int(request.args.get("limit", 100)), 100)})
+    except KeyError:
+        return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
+    except Exception as exc:
+        return jsonify({"error": {"category": "upstream", "message": str(exc), "retryable": False}}), 502
 
 
 @evaluation_bp.route("/knowledgebases", methods=["GET"])
@@ -1421,41 +1458,27 @@ def calculate_health_score(scores):
 @evaluation_bp.route("/health", methods=["GET"])
 @cross_origin()
 def health_check():
-    """健康检查"""
+    """Readiness check for SQLite and mounted writable directories."""
     try:
         init_services()
-        db_status = "healthy"
-        try:
-            config_manager.get_setting("test_key")
-        except Exception:
-            db_status = "unhealthy"
-        evaluation_status = "available" if evaluation_service else "unavailable"
-        return jsonify(
-            {
-                "status": "healthy",
-                "timestamp": datetime.now().isoformat(),
-                "services": {
-                    "database": db_status,
-                    "evaluation_service": evaluation_status,
-                    "metrics_manager": (
-                        "available" if metrics_manager else "unavailable"
-                    ),
-                },
-                "version": "1.0.0",
-            }
-        )
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return (
-            jsonify(
-                {
-                    "status": "unhealthy",
-                    "error": str(e),
-                    "timestamp": datetime.now().isoformat(),
-                }
-            ),
-            500,
-        )
+        task_manager.db.get_connection().close()
+        for directory in (
+            Path(os.getenv("DATASETS_DIR", "tmp/datasets")),
+            Path(os.getenv("REPORTS_DIR", "tmp/evaluation/reports")),
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            if not os.access(directory, os.W_OK):
+                raise OSError(f"Directory is not writable: {directory}")
+        return jsonify({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "services": {"database": "healthy", "evaluation_service": "available" if evaluation_service else "unavailable"},
+            "database_path": task_manager.db.db_path,
+            "version": "1.0.0",
+        })
+    except Exception as exc:
+        logger.exception("Health check failed")
+        return jsonify({"status": "unready", "message": str(exc)}), 503
 
 
 @evaluation_bp.route("/tasks/<task_id>/start", methods=["POST"])

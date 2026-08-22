@@ -17,6 +17,12 @@ SILICONFLOW_API_KEY=sk-your-api-key-here
 # 如果使用 RAGFlow
 RAGFLOW_API_KEY=ragflow-your-key
 RAGFLOW_BASE_URL=http://your-server-ip:9380/api/v1
+
+# 如果通过页面配置 IntelliQ
+# 使用 Fernet.generate_key() 生成加密密钥
+RAG_CREDENTIAL_ENCRYPTION_KEY=your-fernet-key
+SMART_EVAL_ADMIN_TOKEN=your-admin-token
+DATABASE_PATH=data/evaluation.db
 ```
 
 ### 2️⃣ 启动服务

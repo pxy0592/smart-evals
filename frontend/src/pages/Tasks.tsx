@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
 import {
     Card,
@@ -51,6 +50,7 @@ import {
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
 import { PageIntro } from '../components/PageIntro';
+import { EvaluationTaskForm } from '../components/EvaluationTaskForm';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -189,10 +189,14 @@ const Tasks: React.FC = () => {
                 const formattedTasks = response.tasks.map((task) => ({
                     id: task.id,
                     name: task.name || `评测任务 #${task.id}`,
-                    kbId: task.chat_id, // 后端返回 chat_id，前端使用 kbId
-                    kbName: task.chat_id, // TODO: 从对话助手列表中获取名称
+                    kbId: task.assistant_id || task.chat_id || '',
+                    kbName:
+                        task.assistant_name_snapshot ||
+                        task.assistant_id ||
+                        task.chat_id ||
+                        '未知助手',
                     datasetId: task.dataset_id,
-                    datasetName: task.dataset_id, // TODO: 从数据集列表中获取名称
+                    datasetName: task.dataset_name || task.dataset_id,
                     metrics: task.metrics,
                     status: task.status,
                     progress: task.progress,
@@ -240,8 +244,6 @@ const Tasks: React.FC = () => {
     // 组件加载时获取数据
     useEffect(() => {
         fetchTasks();
-        fetchChatAssistants();
-        fetchDatasets();
         fetchMetrics();
     }, []);
 
@@ -758,133 +760,18 @@ const Tasks: React.FC = () => {
             <Modal
                 title="创建评测任务"
                 open={createTaskVisible}
-                onOk={handleCreateTask}
                 onCancel={() => setCreateTaskVisible(false)}
-                width={600}
+                footer={null}
+                width={680}
+                destroyOnClose
             >
-                <Form form={form} layout="vertical">
-                    <Form.Item
-                        label="任务名称"
-                        name="name"
-                        rules={[{ required: false }]}
-                    >
-                        <Input placeholder="可选，如：金融知识库周评测" />
-                    </Form.Item>
-
-                    <Form.Item
-                        label={
-                            <Space>
-                                选择对话助手
-                                <Tooltip title="刷新对话助手列表">
-                                    <Button
-                                        type="link"
-                                        size="small"
-                                        icon={<ReloadOutlined />}
-                                        loading={loadingChats}
-                                        onClick={fetchChatAssistants}
-                                    />
-                                </Tooltip>
-                            </Space>
-                        }
-                        name="chatId"
-                        rules={[{ required: true, message: '请选择对话助手' }]}
-                    >
-                        <Select
-                            placeholder="请选择要评测的对话助手"
-                            loading={loadingChats}
-                            notFoundContent={
-                                loadingChats ? '加载中...' : '暂无对话助手'
-                            }
-                        >
-                            {chatAssistants.map((chat) => (
-                                <Option key={chat.id} value={chat.id}>
-                                    <Space>
-                                        <DatabaseOutlined />
-                                        {chat.name}
-                                        <Text type="secondary">
-                                            ({chat.documentCount} 文档)
-                                        </Text>
-                                    </Space>
-                                </Option>
-                            ))}
-                        </Select>
-                    </Form.Item>
-
-                    <Form.Item
-                        label={
-                            <Space>
-                                选择数据集
-                                <Tooltip title="刷新数据集列表">
-                                    <Button
-                                        type="link"
-                                        size="small"
-                                        icon={<ReloadOutlined />}
-                                        loading={loadingDatasets}
-                                        onClick={fetchDatasets}
-                                    />
-                                </Tooltip>
-                            </Space>
-                        }
-                        name="datasetId"
-                        rules={[{ required: true, message: '请选择数据集' }]}
-                    >
-                        <Select
-                            placeholder="请选择评测数据集"
-                            loading={loadingDatasets}
-                            notFoundContent={
-                                loadingDatasets ? '加载中...' : '暂无数据集'
-                            }
-                        >
-                            {datasets.map((ds) => (
-                                <Option key={ds.id} value={ds.id}>
-                                    {ds.name} ({ds.samples} 样本)
-                                </Option>
-                            ))}
-                        </Select>
-                    </Form.Item>
-
-                    <Form.Item
-                        label="评测指标"
-                        name="metrics"
-                        rules={[
-                            {
-                                required: true,
-                                message: '请至少选择一个评测指标',
-                            },
-                        ]}
-                    >
-                        <Select
-                            mode="multiple"
-                            placeholder="请选择评测指标"
-                            optionLabelProp="label"
-                        >
-                            {availableMetrics.map((metric) => (
-                                <Option
-                                    key={metric.value}
-                                    value={metric.value}
-                                    label={metric.label}
-                                >
-                                    <div>
-                                        <div>{metric.label}</div>
-                                        <Text
-                                            type="secondary"
-                                            style={{ fontSize: 12 }}
-                                        >
-                                            {metric.description}
-                                        </Text>
-                                    </div>
-                                </Option>
-                            ))}
-                        </Select>
-                    </Form.Item>
-
-                    <Alert
-                        message="提示"
-                        description="评测任务创建后将自动加入队列，系统会按顺序执行。"
-                        type="info"
-                        showIcon
-                    />
-                </Form>
+                <EvaluationTaskForm
+                    onCreated={() => {
+                        setCreateTaskVisible(false);
+                        fetchTasks();
+                    }}
+                    onCancel={() => setCreateTaskVisible(false)}
+                />
             </Modal>
 
             {/* 任务详情抽屉 */}

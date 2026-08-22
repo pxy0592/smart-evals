@@ -44,6 +44,11 @@ apiClient.interceptors.response.use(
         return response.data;
     },
     (error) => {
+        const apiError = error.response?.data?.error;
+        const apiMessage =
+            typeof apiError === 'string'
+                ? apiError
+                : apiError?.message || error.response?.data?.message;
         if (error.response) {
             switch (error.response.status) {
                 case 401:
@@ -60,7 +65,7 @@ apiClient.interceptors.response.use(
                     message.error('服务器错误，请稍后重试');
                     break;
                 default:
-                    message.error(error.response.data?.error || '请求失败');
+                    message.error(apiMessage || '请求失败');
             }
         } else if (error.request) {
             message.error('网络错误，请检查网络连接');

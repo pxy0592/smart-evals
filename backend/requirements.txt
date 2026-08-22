@@ -13,3 +13,4 @@ xlrd>=2.0,<3.0
 langchain-openai>=0.3,<1.0
 ragas>=0.2,<0.4
 gunicorn>=22.0,<24.0
+cryptography>=46.0,<47.0

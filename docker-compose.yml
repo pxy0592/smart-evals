@@ -18,6 +18,9 @@ services:
 
     environment:
       - TZ=Asia/Shanghai
+      - DATABASE_PATH=/app/data/evaluation.db
+      - DATASETS_DIR=/app/tmp/datasets
+      - REPORTS_DIR=/app/tmp/evaluation/reports
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health"]

@@ -15,6 +15,7 @@ import re
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 import json
+import uuid
 import pandas as pd
 import aiohttp
 
@@ -312,6 +313,118 @@ class EvaluationService:
 
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 raise
+
+    async def evaluate_with_provider(
+        self,
+        *,
+        provider,
+        assistant_id: str,
+        knowledge_base_ids: List[str],
+        knowledge_base_selection_mode: str,
+        dataset_id: str,
+        selected_metrics: List[str],
+        dataset_samples: List[Dict],
+        progress_callback=None,
+        sample_started=None,
+        sample_completed=None,
+        cancellation_check=None,
+    ) -> Dict[str, Any]:
+        """Evaluate samples through a task-scoped provider with strict completion gates."""
+        if not evaluate or not EvaluationDataset or not SingleTurnSample:
+            raise ImportError("RAGAS evaluation dependencies are not installed")
+        successful_samples = []
+        successful_responses = []
+        failed_details = []
+        total = len(dataset_samples)
+        for index, sample in enumerate(dataset_samples):
+            if cancellation_check and cancellation_check():
+                raise asyncio.CancelledError("Evaluation task cancelled")
+            session_id = str(uuid.uuid4())
+            run_id = sample_started(index, session_id, sample) if sample_started else None
+            result = await provider.query_sample(
+                question=str(sample.get("question") or sample.get("user_input") or ""),
+                assistant_id=assistant_id,
+                knowledge_base_ids=knowledge_base_ids,
+                knowledge_base_selection_mode=knowledge_base_selection_mode,
+                session_id=session_id,
+            )
+            result_dict = result.to_dict()
+            if sample_completed:
+                sample_completed(run_id, result_dict)
+            if result.score_eligible:
+                kwargs = {
+                    "user_input": str(sample.get("question") or sample.get("user_input") or ""),
+                    "response": result.answer,
+                    "retrieved_contexts": result.contexts,
+                }
+                reference = sample.get("expected_answer") or sample.get("reference")
+                if reference:
+                    kwargs["reference"] = str(reference)
+                successful_samples.append(SingleTurnSample(**kwargs))
+                successful_responses.append({
+                    "original_question": kwargs["user_input"],
+                    "answer": result.answer,
+                    "expected_answer": reference or "",
+                    "contexts": result.contexts,
+                    "references": result.references,
+                    "session_id": result.session_id,
+                    "completion_status": "completed",
+                })
+            else:
+                failed_details.append({
+                    "sample_index": index,
+                    "user_input": str(sample.get("question") or sample.get("user_input") or ""),
+                    "actual_answer": "",
+                    "partial_answer": result.partial_answer,
+                    "expected_answer": sample.get("expected_answer") or sample.get("reference") or "",
+                    "contexts": result.contexts,
+                    "references": result.references,
+                    "completion_status": "failed",
+                    "score_eligible": False,
+                    "session_id": result.session_id,
+                    "upstream_error": result.error.to_dict() if result.error else None,
+                    "metric_scores": None,
+                })
+            if progress_callback:
+                progress_callback(int((index + 1) / max(total, 1) * 50))
+
+        if not successful_samples:
+            raise RuntimeError("没有任何样本获得完整可评分回答")
+        metrics = [self.metrics_map[name] for name in selected_metrics if name in self.metrics_map]
+        if not metrics:
+            raise ValueError("没有有效的评测指标")
+        dataset = EvaluationDataset(samples=successful_samples)
+        run_config = RunConfig(max_workers=2, max_retries=2, timeout=300)
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None,
+            lambda: evaluate(
+                dataset=dataset,
+                metrics=metrics,
+                llm=self._get_llm(),
+                embeddings=self._get_embeddings(),
+                run_config=run_config,
+            ),
+        )
+        processed = self._process_results(results, assistant_id, dataset_id, successful_responses)
+        for index, detail in enumerate(processed.get("detailed_scores", [])):
+            detail.setdefault("sample_index", index)
+            detail.setdefault("references", successful_responses[index].get("references", []))
+            detail.setdefault("completion_status", "completed")
+            detail.setdefault("score_eligible", True)
+            detail.setdefault("session_id", successful_responses[index].get("session_id"))
+            detail.setdefault("partial_answer", None)
+            detail.setdefault("upstream_error", None)
+        processed["detailed_scores"].extend(failed_details)
+        processed["evaluation_metadata"].update({
+            "total_count": total,
+            "success_count": len(successful_samples),
+            "failed_count": len(failed_details),
+            "success_rate": len(successful_samples) / max(total, 1),
+        })
+        if progress_callback:
+            progress_callback(99)
+        return processed
 
     async def _prepare_samples(
         self, chat_id: str, dataset_samples: List[Dict], progress_callback=None

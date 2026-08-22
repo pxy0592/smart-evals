@@ -18,8 +18,8 @@ echo ""
 
 # 备份数据
 echo "备份数据..."
-BACKUP_FILE="backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-tar -czf "$BACKUP_FILE" data/ tmp/ 2>/dev/null || true
+./backup.sh
+BACKUP_FILE=$(ls -t backups/smart-eval-backup-*.tar.gz | head -1)
 echo -e "${GREEN}✓ 数据已备份到: $BACKUP_FILE${NC}"
 
 # 停止服务

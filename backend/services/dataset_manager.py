@@ -370,3 +370,54 @@ class DatasetManager:
             description=f"Auto-generated sample dataset of type: {dataset_type}",
             user_id="system",
         )
+
+# Provider-integration upload contract (synchronous helper used by active routes)
+MAX_DATASET_BYTES = 10 * 1024 * 1024
+SUPPORTED_DATASET_EXTENSIONS = {".json", ".jsonl", ".csv", ".xlsx", ".xls"}
+
+
+def normalize_dataset_bytes(file_content: bytes, file_name: str) -> tuple[list[dict], dict]:
+    """Parse supported dataset formats into the canonical list-of-records shape."""
+    from io import BytesIO
+    import pandas as pd
+
+    if len(file_content) > MAX_DATASET_BYTES:
+        raise OverflowError("数据集文件不能超过 10 MB")
+    suffix = Path(file_name).suffix.lower()
+    if suffix not in SUPPORTED_DATASET_EXTENSIONS:
+        raise TypeError(f"不支持的数据集格式: {suffix or 'unknown'}")
+    if suffix in {".json", ".jsonl"}:
+        decoded = file_content.decode("utf-8-sig")
+        if suffix == ".json":
+            samples = json.loads(decoded)
+            if isinstance(samples, dict):
+                samples = [samples]
+        else:
+            samples = [json.loads(line) for line in decoded.splitlines() if line.strip()]
+    elif suffix == ".csv":
+        samples = pd.read_csv(BytesIO(file_content)).where(pd.notna, None).to_dict("records")
+    else:
+        samples = pd.read_excel(BytesIO(file_content)).where(pd.notna, None).to_dict("records")
+    if not isinstance(samples, list) or not samples:
+        raise ValueError("数据集必须至少包含一个样本")
+    normalized = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict):
+            raise ValueError(f"第 {index + 1} 个样本不是对象")
+        question = sample.get("question", sample.get("user_input"))
+        if question is None or not str(question).strip():
+            raise ValueError(f"第 {index + 1} 个样本缺少 question")
+        item = dict(sample)
+        item["question"] = str(question).strip()
+        if "contexts" in item and item["contexts"] is not None and not isinstance(item["contexts"], list):
+            item["contexts"] = [str(item["contexts"])]
+        normalized.append(item)
+    fields = sorted({key for sample in normalized for key in sample})
+    metadata = {
+        "num_samples": len(normalized),
+        "has_reference": any(bool(s.get("expected_answer") or s.get("reference")) for s in normalized),
+        "has_contexts": any(bool(s.get("contexts") or s.get("reference_contexts")) for s in normalized),
+        "sample_fields": fields,
+        "file_type": suffix.lstrip("."),
+    }
+    return normalized, metadata

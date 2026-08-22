@@ -21,20 +21,22 @@ def setup_logging(app):
         format="%(asctime)s %(name)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]",
         handlers=[logging.StreamHandler()],
     )
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-    file_handler = RotatingFileHandler(
-        os.path.join(log_dir, "evaluation.log"), maxBytes=10240000, backupCount=10
-    )
-    file_handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(name)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]"
-        )
-    )
-    file_handler.setLevel(logging.INFO)
     root_logger = logging.getLogger()
-    root_logger.addHandler(file_handler)
+    if not app.config.get("TESTING"):
+        log_file = app.config.get("LOG_FILE", "logs/evaluation.log")
+        os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=app.config.get("LOG_MAX_BYTES", 10240000),
+            backupCount=app.config.get("LOG_BACKUP_COUNT", 10),
+        )
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(name)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]"
+            )
+        )
+        file_handler.setLevel(logging.INFO)
+        root_logger.addHandler(file_handler)
     root_logger.setLevel(logging.INFO)
     app.logger.setLevel(logging.INFO)
     app.logger.info("RAG Evaluation System startup")
@@ -88,16 +90,26 @@ def create_app():
 
     @app.route("/health")
     def health_check():
-        return {
-            "status": "healthy",
-            "service": "rag-evaluation",
-            "version": "1.0.0",
-            "config": {
-                "debug": app.config.get("DEBUG", False),
-                "ragflow_url": app.config.get("RAGFLOW_BASE_URL"),
-                "default_llm": app.config.get("DEFAULT_LLM_MODEL"),
-            },
-        }
+        try:
+            from models.database import get_db_manager
+
+            manager = get_db_manager()
+            manager.get_connection().close()
+            for directory in (
+                app.config.get("DATASETS_DIR"),
+                app.config.get("REPORTS_DIR"),
+            ):
+                os.makedirs(directory, exist_ok=True)
+                if not os.access(directory, os.W_OK):
+                    raise OSError(f"Directory is not writable: {directory}")
+            return {
+                "status": "healthy",
+                "service": "rag-evaluation",
+                "version": "1.0.0",
+                "database": manager.db_path,
+            }
+        except Exception as error:
+            return {"status": "unready", "message": str(error)}, 503
 
     @app.route(
         "/api/ragflow/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"]

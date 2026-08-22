@@ -1,0 +1,602 @@
+openapi: 3.1.0
+info:
+  title: Smart Eval RAG Integration API
+  version: 1.0.0
+  description: Provider-neutral connection, resource discovery, task source, and report source contract for RAGFlow and IntelliQ.
+servers:
+  - url: /api/v1/evaluation
+paths:
+  /rag-connections:
+    get:
+      summary: List RAG system connections
+      responses:
+        '200':
+          description: Credentials are never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections:
+                    type: array
+                    items: { $ref: '#/components/schemas/RagConnectionSummary' }
+    post:
+      summary: Create the phase-one IntelliQ connection
+      security:
+        - AdminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RagConnectionWrite' }
+      responses:
+        '201':
+          description: Connection created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RagConnectionSummary' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+  /rag-connections/{connection_id}:
+    get:
+      summary: Get a connection summary
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RagConnectionSummary' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+    put:
+      summary: Update an editable connection
+      security:
+        - AdminBearer: []
+      description: Omitting api_key preserves the current key. Empty or mask-looking values are rejected.
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RagConnectionUpdate' }
+      responses:
+        '200':
+          description: Updated connection
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RagConnectionSummary' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+  /rag-connections/{connection_id}/test:
+    post:
+      summary: Validate authentication and resource discovery
+      security:
+        - AdminBearer: []
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Validation succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, knowledge_base_count, assistant_count, tested_at]
+                properties:
+                  status: { const: available }
+                  knowledge_base_count: { type: integer, minimum: 0 }
+                  assistant_count: { type: integer, minimum: 0 }
+                  tested_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '502': { $ref: '#/components/responses/UpstreamError' }
+  /rag-connections/{connection_id}/knowledge-bases:
+    get:
+      summary: List normalized knowledge bases
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+        - { name: search, in: query, schema: { type: string } }
+        - { name: assistant_id, in: query, schema: { type: string } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+      responses:
+        '200':
+          description: Normalized resources
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeBaseList' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '502': { $ref: '#/components/responses/UpstreamError' }
+  /rag-connections/{connection_id}/assistants:
+    get:
+      summary: List normalized RAGFlow chats or IntelliQ agents
+      parameters:
+        - $ref: '#/components/parameters/ConnectionId'
+        - { name: search, in: query, schema: { type: string } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+      responses:
+        '200':
+          description: Normalized assistants
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantList' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '502': { $ref: '#/components/responses/UpstreamError' }
+  /datasets:
+    post:
+      summary: Upload and normalize an evaluation dataset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: JSON, JSONL, CSV, XLSX, or XLS; maximum 10 MB.
+                name: { type: string }
+                description: { type: string }
+      responses:
+        '202':
+          description: File accepted for normalization and validation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluationDataset' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413':
+          description: File exceeds 10 MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '415':
+          description: Unsupported file format
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '422':
+          description: File or sample normalization failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /tasks:
+    post:
+      summary: Create an evaluation task
+      description: New clients submit rag_target. Legacy RAGFlow clients may submit chat_id instead, but never both.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvaluationTaskCreate' }
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluationTask' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+    get:
+      summary: List evaluation tasks
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: rag_provider, in: query, schema: { $ref: '#/components/schemas/RagProvider' } }
+        - { name: rag_connection_id, in: query, schema: { type: string } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, total, offset, limit]
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/EvaluationTask' }
+                  total: { type: integer, minimum: 0 }
+                  offset: { type: integer, minimum: 0 }
+                  limit: { type: integer, minimum: 1 }
+  /tasks/{task_id}:
+    get:
+      summary: Get task detail and sample diagnostics
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Task detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluationTaskDetail' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+  /reports:
+    get:
+      summary: List evaluation reports with provider filtering
+      parameters:
+        - { name: rag_provider, in: query, schema: { $ref: '#/components/schemas/RagProvider' } }
+        - { name: rag_connection_id, in: query, schema: { type: string } }
+        - { name: assistant_id, in: query, schema: { type: string } }
+        - { name: knowledge_base_id, in: query, schema: { type: string } }
+        - { name: start_date, in: query, schema: { type: string, format: date } }
+        - { name: end_date, in: query, schema: { type: string, format: date } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: Report list; current fields remain present.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reports, total, offset, limit]
+                properties:
+                  reports:
+                    type: array
+                    items: { $ref: '#/components/schemas/EvaluationReportSummary' }
+                  total: { type: integer, minimum: 0 }
+                  offset: { type: integer, minimum: 0 }
+                  limit: { type: integer, minimum: 1 }
+  /reports/{task_id}:
+    get:
+      summary: Get final report and sample-level results
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Final report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluationReportDetail' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+components:
+  securitySchemes:
+    AdminBearer:
+      type: http
+      scheme: bearer
+      description: Deployment-level Smart Eval administrator token. It is not the IntelliQ API Key.
+  parameters:
+    ConnectionId:
+      name: connection_id
+      in: path
+      required: true
+      schema: { type: string }
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnauthorizedError:
+      description: Missing or invalid deployment administrator token. Upstream services are not called.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ConflictError:
+      description: Resource state conflicts with the request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UpstreamError:
+      description: RAG provider request failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    RagProvider:
+      type: string
+      enum: [ragflow, intelliq]
+    Capabilities:
+      type: object
+      required: [list_knowledge_bases, list_assistants, select_multiple_knowledge_bases, generate_dataset_from_knowledge_base, streaming_chat]
+      properties:
+        list_knowledge_bases: { type: boolean }
+        list_assistants: { type: boolean }
+        select_multiple_knowledge_bases: { type: boolean }
+        generate_dataset_from_knowledge_base: { type: boolean }
+        streaming_chat: { type: boolean }
+    RagConnectionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, provider, name, api_url, api_key_configured, editable, enabled, status, revision, capabilities]
+      properties:
+        id: { type: string }
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        name: { type: string }
+        api_url: { $ref: '#/components/schemas/NormalizedServiceRoot' }
+        api_key_configured: { type: boolean }
+        editable: { type: boolean }
+        enabled: { type: boolean }
+        status: { type: string, enum: [untested, available, unavailable] }
+        revision: { type: integer, minimum: 1 }
+        capabilities: { $ref: '#/components/schemas/Capabilities' }
+        last_tested_at: { type: [string, 'null'], format: date-time }
+        error: { oneOf: [{ $ref: '#/components/schemas/ErrorDetail' }, { type: 'null' }] }
+    RagConnectionWrite:
+      type: object
+      additionalProperties: false
+      required: [provider, name, api_url, api_key]
+      properties:
+        provider: { type: string, const: intelliq }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        api_url: { $ref: '#/components/schemas/RagServiceUrlInput' }
+        api_key: { type: string, minLength: 1, writeOnly: true }
+        enabled: { type: boolean, default: true }
+    RagConnectionUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        api_url: { $ref: '#/components/schemas/RagServiceUrlInput' }
+        api_key: { type: string, minLength: 1, writeOnly: true }
+        enabled: { type: boolean }
+    ResourceRef:
+      type: object
+      required: [id, provider, connection_id, name, selectable]
+      properties:
+        id: { type: string }
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        connection_id: { type: string }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        selectable: { type: boolean }
+        disabled_reason: { type: [string, 'null'] }
+    AssistantRef:
+      allOf:
+        - $ref: '#/components/schemas/ResourceRef'
+        - type: object
+          required: [knowledge_base_selection_mode]
+          properties:
+            built_in: { type: [boolean, 'null'] }
+            knowledge_base_selection_mode:
+              type: [string, 'null']
+              enum: [all, selected, none, null]
+              description: Null or unknown makes the assistant non-selectable.
+            allowed_knowledge_base_ids:
+              type: array
+              uniqueItems: true
+              items: { type: string }
+    KnowledgeBaseList:
+      type: object
+      required: [provider, connection_id, items, total, offset, limit]
+      properties:
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        connection_id: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        total: { type: integer, minimum: 0 }
+        offset: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+    AssistantList:
+      type: object
+      required: [provider, connection_id, items, total, offset, limit]
+      properties:
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        connection_id: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AssistantRef' }
+        total: { type: integer, minimum: 0 }
+        offset: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+    RagTarget:
+      type: object
+      additionalProperties: false
+      required: [provider, connection_id, assistant_id]
+      description: The server resolves the selected Assistant mode. selected requires one or more IDs; all and none require an omitted or empty list.
+      properties:
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        connection_id: { type: string }
+        assistant_id: { type: string }
+        knowledge_base_ids:
+          type: array
+          uniqueItems: true
+          default: []
+          items: { type: string }
+    EvaluationTaskCreate:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, metrics]
+      properties:
+        name: { type: string }
+        dataset_id: { type: string }
+        metrics:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        batch_size: { type: integer, minimum: 1, maximum: 50, default: 10 }
+        llm_model: { type: [string, 'null'] }
+        rag_target: { $ref: '#/components/schemas/RagTarget' }
+        chat_id: { type: string, deprecated: true }
+      oneOf:
+        - required: [rag_target]
+          not: { required: [chat_id] }
+        - required: [chat_id]
+          not: { required: [rag_target] }
+    SourceSnapshot:
+      type: object
+      additionalProperties: false
+      required: [provider, connection_name, assistant_id, assistant_name, knowledge_base_selection_mode, knowledge_bases, legacy]
+      properties:
+        provider: { $ref: '#/components/schemas/RagProvider' }
+        connection_id: { type: [string, 'null'] }
+        connection_revision: { type: [integer, 'null'] }
+        connection_name: { type: string }
+        connection_base_url: { type: [string, 'null'], format: uri }
+        assistant_id: { type: string }
+        assistant_name: { type: string }
+        knowledge_base_selection_mode: { type: [string, 'null'], enum: [all, selected, none, null] }
+        knowledge_bases:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
+        legacy: { type: boolean }
+    EvaluationTask:
+      type: object
+      additionalProperties: false
+      required: [id, dataset_id, metrics, status, outcome, progress, total_samples, processed_samples, successful_samples, failed_samples, has_warnings, rag_provider, source_snapshot]
+      properties:
+        id: { type: string }
+        name: { type: [string, 'null'] }
+        rag_provider: { $ref: '#/components/schemas/RagProvider' }
+        rag_connection_id: { type: [string, 'null'] }
+        assistant_id: { type: [string, 'null'] }
+        chat_id: { type: [string, 'null'], deprecated: true }
+        knowledge_base_ids: { type: array, items: { type: string } }
+        dataset_id: { type: string }
+        dataset_name: { type: [string, 'null'] }
+        metrics: { type: array, items: { type: string } }
+        status: { type: string, enum: [pending, running, completed, failed, cancelled, paused] }
+        outcome:
+          type: [string, 'null']
+          enum: [succeeded, partially_succeeded, failed, cancelled, null]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        total_samples: { type: integer, minimum: 0 }
+        processed_samples: { type: integer, minimum: 0 }
+        successful_samples: { type: integer, minimum: 0 }
+        has_warnings: { type: boolean, default: false }
+        failed_samples: { type: integer, minimum: 0, default: 0 }
+        warning: { oneOf: [{ $ref: '#/components/schemas/PartialFailureWarning' }, { type: 'null' }] }
+        error_message: { type: [string, 'null'] }
+        source_snapshot: { $ref: '#/components/schemas/SourceSnapshot' }
+        created_at: { type: string, format: date-time }
+    EvaluationDataset:
+      type: object
+      required: [id, name, file_type, file_size, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        file_type: { type: string, enum: [json, jsonl, csv, xlsx, xls] }
+        file_size: { type: integer, minimum: 0, maximum: 10485760 }
+        status: { type: string, enum: [pending, processing, completed, failed] }
+        normalized: { type: boolean, default: false }
+        num_samples: { type: integer, minimum: 0 }
+        has_reference: { type: boolean }
+        has_contexts: { type: boolean }
+        error_message: { type: [string, 'null'] }
+    SampleRun:
+      type: object
+      required: [sample_index, attempt, session_id, status, completed_signal_received, contexts, references]
+      properties:
+        sample_index: { type: integer, minimum: 0 }
+        attempt: { type: integer, minimum: 1 }
+        session_id: { type: string }
+        status: { type: string, enum: [pending, running, completed, failed, cancelled] }
+        completed_signal_received: { type: boolean }
+        error: { oneOf: [{ $ref: '#/components/schemas/ErrorDetail' }, { type: 'null' }] }
+        contexts: { type: array, items: { type: string } }
+        references: { type: array, items: { type: object, additionalProperties: true } }
+    EvaluationTaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/EvaluationTask'
+        - type: object
+          properties:
+            sample_runs:
+              type: array
+              items: { $ref: '#/components/schemas/SampleRun' }
+    EvaluationReportSummary:
+      type: object
+      additionalProperties: false
+      required: [task_id, rag_provider, source_snapshot, dataset_id, dataset_name, overall_score, metric_scores, totalSamples, scoredSamples, failedSamples, successRate, warning, createdAt]
+      properties:
+        task_id: { type: string }
+        rag_provider: { $ref: '#/components/schemas/RagProvider' }
+        rag_connection_id: { type: [string, 'null'] }
+        source_snapshot: { $ref: '#/components/schemas/SourceSnapshot' }
+        kb_name: { type: string, deprecated: true }
+        dataset_id: { type: string }
+        dataset_name: { type: string }
+        overall_score: { type: number }
+        metric_scores: { type: object, additionalProperties: true }
+        totalSamples: { type: integer, minimum: 0 }
+        scoredSamples: { type: integer, minimum: 0 }
+        failedSamples: { type: integer, minimum: 0 }
+        successRate: { type: number, minimum: 0, maximum: 100 }
+        warning: { oneOf: [{ $ref: '#/components/schemas/PartialFailureWarning' }, { type: 'null' }] }
+        createdAt: { type: string, format: date-time }
+    EvaluationReportDetail:
+      allOf:
+        - $ref: '#/components/schemas/EvaluationReportSummary'
+        - type: object
+          required: [detailed_scores]
+          properties:
+            detailed_scores:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                required: [sample_index, user_input, actual_answer, partial_answer, score_eligible, contexts, references, completion_status, metric_scores]
+                properties:
+                  sample_index: { type: integer, minimum: 0 }
+                  user_input: { type: string }
+                  actual_answer: { type: string }
+                  partial_answer: { type: [string, 'null'] }
+                  score_eligible: { type: boolean }
+                  metric_scores: { type: [object, 'null'], additionalProperties: true }
+                  expected_answer: { type: [string, 'null'] }
+                  contexts: { type: array, items: { type: string } }
+                  references: { type: array, items: { type: object, additionalProperties: true } }
+                  completion_status: { type: string, enum: [completed, failed, incomplete, cancelled] }
+                  session_id: { type: [string, 'null'] }
+                  upstream_error: { oneOf: [{ $ref: '#/components/schemas/ErrorDetail' }, { type: 'null' }] }
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [category, message]
+      properties:
+        category: { type: string, enum: [validation, authentication, permission, not_found, timeout, rate_limit, upstream, protocol, cancelled, conflict] }
+        message: { type: string }
+        retryable: { type: boolean }
+        http_status: { type: [integer, 'null'] }
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+    PartialFailureWarning:
+      type: object
+      additionalProperties: false
+      required: [code, message, failed_samples]
+      properties:
+        code: { type: string, const: partial_sample_failure }
+        message: { type: string }
+        failed_samples: { type: integer, minimum: 1 }
+    RagServiceUrlInput:
+      type: string
+      format: uri
+      pattern: '^https?://(?![^/]*@)[^\\s?#]+$'
+      description: Accepts a service root or URL ending in /api/v1. Documentation, Swagger, userinfo, query and fragment URLs are rejected by semantic validation.
+      examples:
+        - https://ai-intelliq.peraglobal.com
+        - https://ai-intelliq.peraglobal.com/api/v1
+    NormalizedServiceRoot:
+      type: string
+      format: uri
+      description: Normalized service root without a trailing slash or /api/v1. Provider adapters append /api/v1 exactly once.

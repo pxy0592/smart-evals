@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smart-eval.local/contracts/rag-provider-result.schema.json",
+  "title": "Normalized RAG Provider Query Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "session_id",
+    "completed",
+    "score_eligible",
+    "answer",
+    "contexts",
+    "references",
+    "intermediate_event_summary",
+    "error"
+  ],
+  "properties": {
+    "provider": {
+      "type": "string",
+      "enum": ["ragflow", "intelliq"]
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completed": {
+      "type": "boolean"
+    },
+    "score_eligible": {
+      "type": "boolean"
+    },
+    "answer": {
+      "type": "string"
+    },
+    "partial_answer": {
+      "type": "string"
+    },
+    "contexts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["content"],
+        "properties": {
+          "id": { "type": ["string", "null"] },
+          "knowledge_base_id": { "type": ["string", "null"] },
+          "knowledge_id": { "type": ["string", "null"] },
+          "document_id": { "type": ["string", "null"] },
+          "document_name": { "type": ["string", "null"] },
+          "content": { "type": "string" },
+          "score": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "intermediate_event_summary": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "error": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["category", "message", "retryable"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "authentication",
+            "permission",
+            "validation",
+            "timeout",
+            "rate_limit",
+            "upstream",
+            "protocol",
+            "cancelled"
+          ]
+        },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "http_status": { "type": ["integer", "null"] }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "completed": { "const": true } },
+        "required": ["completed"]
+      },
+      "then": {
+        "properties": {
+          "answer": { "minLength": 1 },
+          "score_eligible": { "const": true },
+          "error": { "type": "null" }
+        }
+      },
+      "else": {
+        "properties": {
+          "answer": { "const": "" },
+          "score_eligible": { "const": false },
+          "error": { "type": "object" }
+        }
+      }
+    }
+  ]
+}
