@@ -1,14 +1,18 @@
 """RAGFlow adapter preserving the legacy Smart Eval behavior."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
 
 import aiohttp
+import requests
 
 from .base import AssistantRef, KnowledgeBaseRef, ProviderCapabilities, ProviderError, RagProvider, RagQueryResult
 from .url_policy import normalize_service_url
+
+logger = logging.getLogger(__name__)
 
 
 class RAGFlowProvider(RagProvider):
@@ -65,6 +69,68 @@ class RAGFlowProvider(RagProvider):
                 raise RuntimeError(data.get("message") or f"RAGFlow HTTP {response.status}")
             rows = data.get("data") or []
             return [AssistantRef(id=str(row["id"]), provider="ragflow", connection_id=self.connection_id, name=str(row.get("name") or row["id"]), description=str(row.get("description") or ""), selectable=True, knowledge_base_selection_mode="selected", allowed_knowledge_base_ids=tuple(str(x) for x in row.get("datasets") or [])) for row in rows]
+
+    def get_chunks(self, kb_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve knowledge base content chunks for AI dataset generation.
+
+        Uses RAGFlow sync REST API to list documents and fetch chunks per document.
+        """
+        try:
+            chunks: list[dict[str, Any]] = []
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            docs_resp = requests.get(
+                f"{self.api_base}/datasets/{kb_id}/documents",
+                headers=headers,
+                params={"page": 1, "page_size": 50},
+                timeout=30,
+            )
+            if docs_resp.status_code != 200:
+                return []
+            docs_data = docs_resp.json()
+            if docs_data.get("code") != 0:
+                return []
+            documents = docs_data.get("data", {}).get("docs", [])
+            if not documents:
+                return []
+            chunks_per_doc = max(1, limit // len(documents))
+            for doc in documents[:10]:
+                doc_id = doc.get("id")
+                doc_name = doc.get("name", "未知文档")
+                if not doc_id:
+                    continue
+                chunks_resp = requests.get(
+                    f"{self.api_base}/datasets/{kb_id}/documents/{doc_id}/chunks",
+                    headers=headers,
+                    params={"page": 1, "page_size": chunks_per_doc},
+                    timeout=30,
+                )
+                if chunks_resp.status_code != 200:
+                    continue
+                chunks_data = chunks_resp.json()
+                if chunks_data.get("code") != 0:
+                    continue
+                raw_chunks = chunks_data.get("data", {}).get("chunks", [])
+                for chunk in raw_chunks:
+                    content = str(chunk.get("content", "")).strip()
+                    if not content:
+                        continue
+                    chunks.append({
+                        "id": str(chunk.get("id", "")),
+                        "content": content,
+                        "doc_name": doc_name,
+                        "doc_id": str(doc_id),
+                        "dataset_id": kb_id,
+                        "page_number": chunk.get("page_number", 0),
+                        "positions": chunk.get("positions", []),
+                    })
+                if len(chunks) >= limit:
+                    break
+            return chunks[:limit]
+        except Exception:
+            logger.exception("Error getting chunks from RAGFlow dataset %s", kb_id)
+            return []
 
     async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str, session_id: str):
         session = await self._client()

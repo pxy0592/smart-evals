@@ -663,10 +663,7 @@ const Datasets: React.FC = () => {
                                 options={genConnections.map((c) => ({
                                     value: c.id,
                                     label: `${c.name} (${c.provider})`,
-                                    disabled:
-                                        !c.enabled ||
-                                        !c.capabilities
-                                            .generate_dataset_from_knowledge_base,
+                                    disabled: !c.enabled,
                                 }))}
                             />
                         )}

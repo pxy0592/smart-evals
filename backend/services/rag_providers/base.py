@@ -122,3 +122,16 @@ class RagProvider(ABC):
         knowledge_base_selection_mode: str,
         session_id: str,
     ) -> RagQueryResult: ...
+
+    @abstractmethod
+    def get_chunks(self, kb_id: str, limit: int) -> list[dict[str, Any]]:
+        """Retrieve knowledge base content chunks for AI dataset generation.
+
+        Args:
+            kb_id: Knowledge base identifier (provider-scoped).
+            limit: Maximum number of chunks to return.
+
+        Returns:
+            List of chunk dicts, each with id, content, doc_name, doc_id, dataset_id.
+        """
+        ...

@@ -526,98 +526,101 @@ def generate_ai_dataset():
         kb_id = data.get("kb_id")
         sample_count = data.get("sample_count", 10)
         question_types = data.get("question_types", ["factual", "analytical"])
+        connection_id = data.get("connection_id", "ragflow-default")
         if not kb_id:
             return (jsonify({"error": "Knowledge base ID is required"}), 400)
-        else:
-            if sample_count < 1 or sample_count > 100:
-                return (
-                    jsonify({"error": "Sample count must be between 1 and 100"}),
-                    400,
+        if sample_count < 1 or sample_count > 100:
+            return (jsonify({"error": "Sample count must be between 1 and 100"}), 400)
+        # Resolve connection and verify capabilities
+        connection = RagConnectionService().get_connection(connection_id, include_secret=True)
+        if not connection or not connection.get("enabled"):
+            return (jsonify({"error": "RAG connection not found or disabled"}), 400)
+        provider = create_provider(connection, connection.get("api_key"))
+        if not provider.capabilities.generate_dataset_from_knowledge_base:
+            return (jsonify({"error": "This connection type does not support AI dataset generation"}), 400)
+        dataset_id = str(uuid.uuid4())
+        dataset_name = (
+            f"AI Generated Dataset - {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        dataset_data = {
+            "id": dataset_id,
+            "name": dataset_name,
+            "description": f"AI generated dataset from knowledge base {kb_id} with {sample_count} samples",
+            "file_name": "ai_generated.json",
+            "file_type": ".json",
+            "file_size": 0,
+            "storage_path": f"tmp/datasets/{dataset_id}.json",
+            "num_samples": 0,
+            "has_reference": False,
+            "has_contexts": False,
+            "sample_fields": [],
+            "status": "processing",
+            "progress": 0,
+            "created_by": "ai-generator",
+        }
+        dataset_manager.create_dataset(dataset_data)
+        import threading
+
+        def generate_async():
+            try:
+                from services.ai_dataset_generator import AIDatasetGenerator
+
+                generator = AIDatasetGenerator()
+                samples = generator.generate_dataset_from_kb(
+                    provider=provider,
+                    kb_id=kb_id,
+                    sample_count=sample_count,
+                    question_types=question_types,
                 )
-            else:
-                dataset_id = str(uuid.uuid4())
-                dataset_name = (
-                    f"AI Generated Dataset - {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                if not samples:
+                    dataset_manager.update_dataset_status(
+                        dataset_id,
+                        "failed",
+                        error_message="Failed to generate samples from knowledge base",
+                    )
+                    return
+                storage_path = Path("tmp/datasets")
+                storage_path.mkdir(parents=True, exist_ok=True)
+                file_path = storage_path / f"{dataset_id}.json"
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(samples, f, ensure_ascii=False, indent=2)
+                dataset_manager.update_dataset_status(
+                    dataset_id,
+                    "completed",
+                    progress=100,
+                    num_samples=len(samples),
+                    has_reference=any(
+                        ("expected_answer" in sample for sample in samples)
+                    ),
+                    has_contexts=any(
+                        ("contexts" in sample for sample in samples)
+                    ),
                 )
-                dataset_data = {
+            except Exception as e:
+                logger.error(f"Failed to generate AI dataset: {str(e)}")
+                dataset_manager.update_dataset_status(
+                    dataset_id, "failed", error_message=str(e)
+                )
+
+        thread = threading.Thread(target=generate_async)
+        thread.daemon = True
+        thread.start()
+        return (
+            jsonify(
+                {
                     "id": dataset_id,
                     "name": dataset_name,
-                    "description": f"AI generated dataset from knowledge base {kb_id} with {sample_count} samples",
+                    "description": dataset_data["description"],
                     "file_name": "ai_generated.json",
                     "file_type": ".json",
-                    "file_size": 0,
-                    "storage_path": f"tmp/datasets/{dataset_id}.json",
                     "num_samples": 0,
-                    "has_reference": False,
-                    "has_contexts": False,
-                    "sample_fields": [],
                     "status": "processing",
                     "progress": 0,
-                    "created_by": "ai-generator",
+                    "created_at": datetime.now().isoformat(),
                 }
-                dataset_manager.create_dataset(dataset_data)
-                import threading
-
-                def generate_async():
-                    try:
-                        from services.ai_dataset_generator import AIDatasetGenerator
-
-                        generator = AIDatasetGenerator()
-                        samples = generator.generate_dataset_from_kb(
-                            kb_id=kb_id,
-                            sample_count=sample_count,
-                            question_types=question_types,
-                        )
-                        if not samples:
-                            dataset_manager.update_dataset_status(
-                                dataset_id,
-                                "failed",
-                                error_message="Failed to generate samples from knowledge base",
-                            )
-                            return
-                        else:
-                            storage_path = Path("tmp/datasets")
-                            storage_path.mkdir(parents=True, exist_ok=True)
-                            file_path = storage_path / f"{dataset_id}.json"
-                            with open(file_path, "w", encoding="utf-8") as f:
-                                json.dump(samples, f, ensure_ascii=False, indent=2)
-                        dataset_manager.update_dataset_status(
-                            dataset_id,
-                            "completed",
-                            progress=100,
-                            num_samples=len(samples),
-                            has_reference=any(
-                                ("expected_answer" in sample for sample in samples)
-                            ),
-                            has_contexts=any(
-                                ("contexts" in sample for sample in samples)
-                            ),
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to generate AI dataset: {str(e)}")
-                        dataset_manager.update_dataset_status(
-                            dataset_id, "failed", error_message=str(e)
-                        )
-
-                thread = threading.Thread(target=generate_async)
-                thread.daemon = True
-                thread.start()
-                return (
-                    jsonify(
-                        {
-                            "id": dataset_id,
-                            "name": dataset_name,
-                            "description": dataset_data["description"],
-                            "file_name": "ai_generated.json",
-                            "file_type": ".json",
-                            "num_samples": 0,
-                            "status": "processing",
-                            "progress": 0,
-                            "created_at": datetime.now().isoformat(),
-                        }
-                    ),
-                    202,
-                )
+            ),
+            202,
+        )
     except Exception as e:
         logger.error(f"Failed to create AI dataset task: {str(e)}")
         return (jsonify({"error": "Failed to create AI dataset task"}), 500)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -11,10 +12,12 @@ from .base import AssistantRef, KnowledgeBaseRef, ProviderCapabilities, Provider
 from .sse import aggregate_intelliq_sse
 from .url_policy import normalize_service_url
 
+logger = logging.getLogger(__name__)
+
 
 class IntelliQProvider(RagProvider):
     provider_name = "intelliq"
-    capabilities = ProviderCapabilities(streaming_chat=True)
+    capabilities = ProviderCapabilities(generate_dataset_from_knowledge_base=True, streaming_chat=True)
 
     def __init__(self, *, base_url: str, api_key: str, connection_id: str, max_retries: int = 1):
         normalized = normalize_service_url(base_url)
@@ -78,6 +81,57 @@ class IntelliQProvider(RagProvider):
             result.append(KnowledgeBaseRef(id=str(row.get("id")), provider="intelliq", connection_id=self.connection_id, name=name, description=str(row.get("description") or ""), selectable=True, document_count=row.get("knowledge_count"), chunk_count=row.get("chunk_count")))
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 100))
         return result[offset : offset + limit]
+
+    def get_chunks(self, kb_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve knowledge base content chunks for AI dataset generation.
+
+        Uses IntelliQ REST API to list documents and fetch chunks per document.
+        Bridges async HTTP via asyncio.run() since the generator runs in a sync thread.
+        """
+        async def _fetch():
+            chunks: list[dict[str, Any]] = []
+            try:
+                docs_payload = await self._get_json(f"/knowledge-bases/{kb_id}/documents")
+                documents = docs_payload.get("data") or []
+                if not documents:
+                    return chunks
+                chunks_per_doc = max(1, limit // len(documents))
+                for doc in documents[:10]:
+                    doc_id = str(doc.get("id"))
+                    doc_name = str(doc.get("name") or doc_id)
+                    if not doc_id:
+                        continue
+                    try:
+                        chunks_payload = await self._get_json(
+                            f"/knowledge-bases/{kb_id}/documents/{doc_id}/chunks",
+                            {"page": 1, "page_size": chunks_per_doc},
+                        )
+                    except RuntimeError:
+                        continue
+                    raw_chunks = chunks_payload.get("data") or []
+                    for chunk in raw_chunks:
+                        content = str(chunk.get("content") or "").strip()
+                        if not content:
+                            continue
+                        chunks.append({
+                            "id": str(chunk.get("id") or ""),
+                            "content": content,
+                            "doc_name": doc_name,
+                            "doc_id": doc_id,
+                            "dataset_id": kb_id,
+                        })
+                    if len(chunks) >= limit:
+                        break
+                return chunks[:limit]
+            except Exception:
+                logger.exception("Error getting chunks from IntelliQ KB %s", kb_id)
+                return chunks
+
+        try:
+            return asyncio.run(_fetch())
+        except RuntimeError:
+            logger.exception("Error getting chunks from IntelliQ KB %s", kb_id)
+            return []
 
     @staticmethod
     def _normalize_mode(config: dict[str, Any]) -> str | None:

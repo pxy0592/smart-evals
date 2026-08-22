@@ -1,138 +1,39 @@
 import json
 import logging
 import random
-import requests
-import os
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class AIDatasetGenerator:
-    """AI数据集生成器 - 完全基于LLM生成，无模板"""
+    """AI dataset generator — purely LLM-based, no templates.
+
+    The caller provides a RagProvider instance so chunk retrieval is
+    provider-agnostic instead of being hardcoded to RAGFlow.
+    """
 
     def __init__(self):
-        self.ragflow_base_url = (
-            os.getenv("RAGFLOW_BASE_URL", "http://localhost:9380") + "/api/v1"
-        )
-        self.ragflow_api_key = os.getenv("RAGFLOW_API_KEY", "")
-        if not self.ragflow_api_key:
-            try:
-                import yaml
-
-                with open("conf/service_conf.yaml", "r", encoding="utf-8") as f:
-                    config = yaml.safe_load(f)
-                    self.ragflow_api_key = config.get("ragflow", {}).get("api_key", "")
-            except Exception as e:
-                logger.warning(f"Failed to load RAGFlow API key from config: {str(e)}")
-        if not self.ragflow_api_key:
-            logger.warning("RAGFlow API key not found.")
-        else:
-            logger.info("RAGFlow API key loaded successfully")
+        pass
 
     def get_knowledge_base_chunks(
-        self, kb_id: str, limit: int = 50
+        self, provider, kb_id: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """获取知识库的chunks\n        \n        Args:\n            kb_id: 知识库ID (dataset_id)，直接从 RAGFlow dataset 获取 chunks\n            limit: 最多返回的 chunks 数量\n"""
+        """Retrieve chunks from a knowledge base through the given provider.
+
+        Falls back to mock data when the provider returns no chunks.
+        """
         try:
-            logger.info(f"Getting chunks from knowledge base (dataset_id): {kb_id}")
-            chunks = self._get_chunks_from_dataset(kb_id, limit)
+            logger.info("Getting chunks from KB %s via provider %s", kb_id, type(provider).__name__)
+            chunks = provider.get_chunks(kb_id, limit)
             if chunks:
-                logger.info(
-                    f"Successfully retrieved {len(chunks)} chunks from dataset {kb_id}"
-                )
+                logger.info("Successfully retrieved %d chunks from KB %s", len(chunks), kb_id)
                 return chunks
-            else:
-                logger.warning(f"No chunks found in dataset {kb_id}, using mock data")
-                return self._get_mock_chunks()
-        except Exception as e:
-            logger.error(f"Error getting chunks from knowledge base {kb_id}: {str(e)}")
+            logger.warning("No chunks found in KB %s, using mock data", kb_id)
             return self._get_mock_chunks()
-
-    def _get_chunks_from_dataset(
-        self, dataset_id: str, limit: int = 20
-    ) -> List[Dict[str, Any]]:
-        """从指定数据集获取chunks"""
-        try:
-            chunks = []
-            docs_url = f"{self.ragflow_base_url}/datasets/{dataset_id}/documents"
-            headers = {"Content-Type": "application/json"}
-            if self.ragflow_api_key:
-                headers["Authorization"] = f"Bearer {self.ragflow_api_key}"
-            params = {"page": 1, "page_size": 50}
-            response = requests.get(
-                docs_url, headers=headers, params=params, timeout=30
-            )
-            if response.status_code != 200:
-                return []
-            else:
-                docs_data = response.json()
-                if docs_data.get("code") != 0:
-                    return []
-                else:
-                    documents = docs_data.get("data", {}).get("docs", [])
-                    if not documents:
-                        return []
-                    else:
-                        chunks_per_doc = max(1, limit // len(documents))
-                        for doc in documents[:10]:
-                            doc_id = doc.get("id")
-                            doc_name = doc.get("name", "未知文档")
-                            if not doc_id:
-                                continue
-                            else:
-                                doc_chunks = self._get_chunks_from_document(
-                                    dataset_id, doc_id, doc_name, chunks_per_doc
-                                )
-                                chunks.extend(doc_chunks)
-                                if len(chunks) >= limit:
-                                    break
-                        return chunks[:limit]
         except Exception as e:
-            logger.error(f"Error getting chunks from dataset {dataset_id}: {str(e)}")
-            return []
-
-    def _get_chunks_from_document(
-        self, dataset_id: str, document_id: str, doc_name: str, limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """从指定文档获取chunks"""
-        try:
-            chunks_url = f"{self.ragflow_base_url}/datasets/{dataset_id}/documents/{document_id}/chunks"
-            headers = {"Content-Type": "application/json"}
-            if self.ragflow_api_key:
-                headers["Authorization"] = f"Bearer {self.ragflow_api_key}"
-            params = {"page": 1, "page_size": limit}
-            response = requests.get(
-                chunks_url, headers=headers, params=params, timeout=30
-            )
-            if response.status_code != 200:
-                return []
-            else:
-                chunks_data = response.json()
-                if chunks_data.get("code") != 0:
-                    return []
-                else:
-                    raw_chunks = chunks_data.get("data", {}).get("chunks", [])
-                    processed_chunks = []
-                    for chunk in raw_chunks:
-                        processed_chunk = {
-                            "id": chunk.get("id", ""),
-                            "content": chunk.get("content", ""),
-                            "doc_name": doc_name,
-                            "doc_id": document_id,
-                            "dataset_id": dataset_id,
-                            "page_number": chunk.get("page_number", 0),
-                            "positions": chunk.get("positions", []),
-                            "create_time": chunk.get("create_time", ""),
-                            "update_time": chunk.get("update_time", ""),
-                        }
-                        if processed_chunk["content"].strip():
-                            processed_chunks.append(processed_chunk)
-                    return processed_chunks
-        except Exception as e:
-            logger.error(f"Error getting chunks from document {document_id}: {str(e)}")
-            return []
+            logger.error("Error getting chunks from KB %s: %s", kb_id, e)
+            return self._get_mock_chunks()
 
     def _get_mock_chunks(self) -> List[Dict[str, Any]]:
         """获取模拟chunks数据用于测试"""
@@ -295,15 +196,15 @@ class AIDatasetGenerator:
         return None
 
     def generate_dataset_from_kb(
-        self, kb_id: str, sample_count: int, question_types: List[str]
+        self, provider, kb_id: str, sample_count: int, question_types: List[str]
     ) -> List[Dict[str, Any]]:
-        """基于知识库生成数据集 - 完全使用LLM生成，无模板"""
+        """Generate a dataset from a knowledge base through the given provider."""
         try:
             logger.info(
-                f"Starting AI dataset generation for KB {kb_id}, {sample_count} samples"
+                "Starting AI dataset generation for KB %s, %d samples", kb_id, sample_count
             )
             chunks = self.get_knowledge_base_chunks(
-                kb_id, limit=min(500, sample_count * 50)
+                provider, kb_id, limit=min(500, sample_count * 50)
             )
             if not chunks:
                 logger.error("No chunks retrieved from knowledge base")

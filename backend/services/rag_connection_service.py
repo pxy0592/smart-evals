@@ -29,7 +29,15 @@ class RagConnectionService:
         error = None
         if row.get("last_error_message"):
             error = {"category": row.get("last_error_category") or "upstream", "message": row["last_error_message"], "retryable": False}
-        return {"id": row["id"], "provider": row["provider"], "name": row["name"], "api_url": row["base_url"], "api_key_configured": bool(row.get("api_key_ciphertext")), "editable": True, "enabled": bool(row["enabled"]), "status": row["validation_status"], "revision": row["revision"], "capabilities": {"list_knowledge_bases": True, "list_assistants": True, "select_multiple_knowledge_bases": True, "generate_dataset_from_knowledge_base": False, "streaming_chat": True}, "last_tested_at": row.get("last_validated_at"), "error": error}
+        connection = {"id": row["id"], "provider": row["provider"], "name": row["name"], "base_url": row["base_url"], "api_url": row["base_url"]}
+        try:
+            cipher = CredentialCipher()
+            api_key = cipher.decrypt(row["api_key_ciphertext"]) if row.get("api_key_ciphertext") else ""
+            provider = create_provider(connection, api_key)
+            capabilities = provider.capabilities.__dict__
+        except Exception:
+            capabilities = {"list_knowledge_bases": True, "list_assistants": True, "select_multiple_knowledge_bases": True, "generate_dataset_from_knowledge_base": False, "streaming_chat": True}
+        return {"id": row["id"], "provider": row["provider"], "name": row["name"], "api_url": row["base_url"], "api_key_configured": bool(row.get("api_key_ciphertext")), "editable": True, "enabled": bool(row["enabled"]), "status": row["validation_status"], "revision": row["revision"], "capabilities": capabilities, "last_tested_at": row.get("last_validated_at"), "error": error}
 
     def list_connections(self):
         return [self._ragflow_summary(), *[self._summary(row) for row in self.db.list_rag_connections()]]
