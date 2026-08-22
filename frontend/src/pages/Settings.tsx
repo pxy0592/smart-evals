@@ -28,6 +28,7 @@ import {
     CheckCircleOutlined,
 } from '@ant-design/icons';
 import { systemApi } from '../services/evaluation';
+import { PageIntro } from '../components/PageIntro';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -256,10 +257,13 @@ const Settings: React.FC = () => {
     };
 
     return (
-        <div>
-            <Title level={2}>系统设置</Title>
+        <div className="page-shell">
+            <PageIntro
+                title="系统设置"
+                description="配置评测服务、模型与运行参数。"
+            />
 
-            <Tabs defaultActiveKey="general" style={{ marginTop: 24 }}>
+            <Tabs defaultActiveKey="general">
                 <TabPane
                     tab={
                         <span>

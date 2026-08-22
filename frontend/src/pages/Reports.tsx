@@ -55,6 +55,7 @@ import type {
 } from '../services/evaluation';
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
+import { PageIntro } from '../components/PageIntro';
 
 const { Title, Text, Paragraph } = Typography;
 const { RangePicker } = DatePicker;
@@ -902,13 +903,16 @@ const Reports: React.FC = () => {
     };
 
     return (
-        <div>
-            <Title level={2}>评测报告</Title>
+        <div className="page-shell">
+            <PageIntro
+                title="评测报告"
+                description="比较评测结果并深入查看样本级表现。"
+            />
 
             {viewMode === 'list' ? (
                 <>
-                    <Card style={{ marginTop: 24 }}>
-                        <div style={{ marginBottom: 16 }}>
+                    <Card>
+                        <div className="page-toolbar">
                             <Space>
                                 <RangePicker />
                                 <Select

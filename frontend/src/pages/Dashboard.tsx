@@ -10,7 +10,7 @@ import {
     Tag,
     Table,
     Empty,
-    Spin,
+    Skeleton,
     message,
     Tooltip,
 } from 'antd';
@@ -30,6 +30,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { systemApi, taskApi } from '../services/evaluation';
 import type { EvaluationTask } from '../services/evaluation';
+import { PageIntro } from '../components/PageIntro';
 
 const { Title, Text } = Typography;
 
@@ -232,17 +233,20 @@ const Dashboard: React.FC = () => {
 
     if (loading && recentTasks.length === 0) {
         return (
-            <div style={{ textAlign: 'center', padding: '100px 0' }}>
-                <Spin size="large" tip="加载中..." />
+            <div className="loading-state" aria-label="正在加载仪表盘">
+                <Skeleton active paragraph={{ rows: 8 }} />
             </div>
         );
     }
 
     return (
-        <div>
-            <Title level={2}>评测仪表盘</Title>
+        <div className="page-shell">
+            <PageIntro
+                title="评测仪表盘"
+                description="集中查看知识库质量、评测进度与近期任务。"
+            />
 
-            <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+            <Row gutter={[16, 16]} className="metric-grid">
                 <Col xs={24} sm={12} lg={6}>
                     <Card>
                         <Statistic
@@ -317,7 +321,7 @@ const Dashboard: React.FC = () => {
                 </Col>
             </Row>
 
-            <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+            <Row gutter={[16, 16]}>
                 <Col xs={24} lg={12}>
                     <Card
                         title="评测指标得分"
@@ -411,7 +415,7 @@ const Dashboard: React.FC = () => {
                 </Col>
             </Row>
 
-            <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+            <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
                 <Col xs={24} lg={12}>
                     <Card title="任务状态分布">
                         <Row gutter={16}>

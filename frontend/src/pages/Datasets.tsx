@@ -52,6 +52,7 @@ import type {
 } from '../services/evaluation';
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
+import { PageIntro } from '../components/PageIntro';
 
 const { Title, Text, Paragraph } = Typography;
 const { Search } = Input;
@@ -501,17 +502,14 @@ const Datasets: React.FC = () => {
     };
 
     return (
-        <div>
-            <Title level={2}>数据集管理</Title>
+        <div className="page-shell">
+            <PageIntro
+                title="数据集管理"
+                description="管理评测样本、数据完整性与任务入口。"
+            />
 
-            <Card style={{ marginTop: 24 }}>
-                <div
-                    style={{
-                        marginBottom: 16,
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                    }}
-                >
+            <Card>
+                <div className="page-toolbar">
                     <Space>
                         <Search
                             placeholder="搜索数据集"

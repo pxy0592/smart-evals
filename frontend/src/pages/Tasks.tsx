@@ -50,6 +50,7 @@ import {
 } from '../services/evaluation';
 import { useBatchDelete } from '../hooks/useBatchDelete';
 import { BatchActionBar } from '../components/BatchActionBar';
+import { PageIntro } from '../components/PageIntro';
 
 const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
@@ -663,12 +664,15 @@ const Tasks: React.FC = () => {
     };
 
     return (
-        <div>
-            <Title level={2}>评测任务</Title>
+        <div className="page-shell">
+            <PageIntro
+                title="评测任务"
+                description="创建、跟踪并排查知识库评测任务。"
+            />
 
             {/* 统计卡片 */}
-            <Row gutter={16} style={{ marginTop: 24, marginBottom: 24 }}>
-                <Col span={6}>
+            <Row gutter={[16, 16]} className="metric-grid">
+                <Col xs={24} sm={12} xl={6}>
                     <Card>
                         <Statistic
                             title="全部任务"
@@ -677,7 +681,7 @@ const Tasks: React.FC = () => {
                         />
                     </Card>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                     <Card>
                         <Statistic
                             title="运行中"
@@ -693,7 +697,7 @@ const Tasks: React.FC = () => {
                         />
                     </Card>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                     <Card>
                         <Statistic
                             title="已完成"
@@ -703,7 +707,7 @@ const Tasks: React.FC = () => {
                         />
                     </Card>
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                     <Card>
                         <Statistic
                             title="失败"
@@ -717,7 +721,7 @@ const Tasks: React.FC = () => {
 
             {/* 任务列表 */}
             <Card>
-                <div style={{ marginBottom: 16 }}>
+                <div className="page-toolbar">
                     <Button
                         type="primary"
                         icon={<RocketOutlined />}
