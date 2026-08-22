@@ -74,6 +74,18 @@ interface EvaluationTask {
     createdAt: string;
     score?: number;
     errorMessage?: string;
+    source_snapshot?: {
+        provider: string;
+        connection_id: string;
+        connection_revision: number;
+        connection_name: string;
+        connection_base_url: string;
+        assistant_id: string;
+        assistant_name: string;
+        knowledge_base_selection_mode: string;
+        knowledge_bases: Array<{ id: string; name: string }>;
+        legacy: boolean;
+    };
 }
 
 interface ChatAssistant {
@@ -207,6 +219,7 @@ const Tasks: React.FC = () => {
                     createdBy: 'admin', // TODO: 从 task 数据中获取
                     createdAt: task.created_at,
                     errorMessage: task.error_message,
+                    source_snapshot: task.source_snapshot || undefined,
                 }));
                 console.log('🔄 格式化后的任务列表:', formattedTasks);
                 console.log('🔄 当前任务数量:', formattedTasks.length);
@@ -337,6 +350,30 @@ const Tasks: React.FC = () => {
             render: (text, record) => (
                 <a onClick={() => showTaskDetails(record)}>{text}</a>
             ),
+        },
+        {
+            title: 'RAG 系统',
+            key: 'ragProvider',
+            width: 120,
+            render: (_: any, record: EvaluationTask) => {
+                const provider = record.source_snapshot?.provider;
+                const name = record.source_snapshot?.connection_name || provider;
+                const colorMap: Record<string, string> = {
+                    intelliq: 'blue',
+                    ragflow: 'green',
+                };
+                return (
+                    <Tag color={colorMap[provider || ''] || 'default'}>
+                        {name || '未知'}
+                    </Tag>
+                );
+            },
+            filters: [
+                { text: 'IntelliQ', value: 'intelliq' },
+                { text: 'RAGFlow', value: 'ragflow' },
+            ],
+            onFilter: (value, record) =>
+                record.source_snapshot?.provider === value,
         },
         {
             title: '对话助手',
@@ -791,15 +828,33 @@ const Tasks: React.FC = () => {
 
                         <Row gutter={[16, 16]}>
                             <Col span={12}>
+                                <Text type="secondary">RAG 提供商：</Text>
+                                <br />
+                                <Tag color={selectedTask.source_snapshot?.provider === 'intelliq' ? 'blue' : 'green'}>
+                                    {selectedTask.source_snapshot?.connection_name || selectedTask.source_snapshot?.provider || '未知'}
+                                </Tag>
+                            </Col>
+                            <Col span={12}>
                                 <Text type="secondary">对话助手：</Text>
                                 <br />
-                                <Text strong>{selectedTask.kbName}</Text>
+                                <Text strong>{selectedTask.source_snapshot?.assistant_name || selectedTask.kbName}</Text>
                             </Col>
                             <Col span={12}>
                                 <Text type="secondary">数据集：</Text>
                                 <br />
                                 <Text strong>{selectedTask.datasetName}</Text>
                             </Col>
+                            {selectedTask.source_snapshot?.knowledge_bases && selectedTask.source_snapshot.knowledge_bases.length > 0 && (
+                                <Col span={12}>
+                                    <Text type="secondary">知识库：</Text>
+                                    <br />
+                                    <Space wrap>
+                                        {selectedTask.source_snapshot.knowledge_bases.map((kb) => (
+                                            <Tag key={kb.id}>{kb.name}</Tag>
+                                        ))}
+                                    </Space>
+                                </Col>
+                            )}
                             <Col span={12}>
                                 <Text type="secondary">状态：</Text>
                                 <br />

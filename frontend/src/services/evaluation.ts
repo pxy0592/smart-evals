@@ -143,6 +143,9 @@ export interface EvaluationReport {
         actual_answer: string;
         expected_answer: string;
         contexts: string[];
+        completion_status?: string;
+        partial_answer?: string;
+        upstream_error?: { category: string; message: string; retryable?: boolean } | null;
         [key: string]: any; // for metric scores
     }>;
     rag_provider?: RagProvider;

@@ -437,8 +437,16 @@ const Reports: React.FC = () => {
                                 评测报告 - {selectedReport.task_id}
                             </Title>
                             <Paragraph type="secondary">
+                                RAG 系统：{selectedReport.source_snapshot?.connection_name || selectedReport.rag_provider || '未知'} | 助手：{selectedReport.source_snapshot?.assistant_name || selectedReport.kb_name}
+                                <br />
                                 知识库：{selectedReport.kb_name} | 数据集：
                                 {selectedReport.dataset_name}
+                                {selectedReport.source_snapshot?.knowledge_bases && selectedReport.source_snapshot.knowledge_bases.length > 0 && (
+                                    <>
+                                        <br />
+                                        知识库列表：{selectedReport.source_snapshot.knowledge_bases.map((kb: any) => kb.name).join('、')}
+                                    </>
+                                )}
                                 <br />
                                 生成时间：
                                 {selectedReport.createdAt
@@ -606,6 +614,22 @@ const Reports: React.FC = () => {
                                         </Tooltip>
                                     ),
                                 },
+                                {
+                                    title: '状态',
+                                    dataIndex: 'completion_status',
+                                    key: 'completion_status',
+                                    width: 80,
+                                    render: (status: string, record: any) => {
+                                        if (status === 'failed') {
+                                            return (
+                                                <Tooltip title={record.upstream_error?.message || '未知错误'}>
+                                                    <Tag color="error">失败</Tag>
+                                                </Tooltip>
+                                            );
+                                        }
+                                        return <Tag color="success">完成</Tag>;
+                                    },
+                                },
                                 // 动态生成指标列
                                 ...Object.keys(realSamples[0] || {})
                                     .filter(
@@ -614,6 +638,13 @@ const Reports: React.FC = () => {
                                             key !== 'actual_answer' &&
                                             key !== 'expected_answer' &&
                                             key !== 'contexts' &&
+                                            key !== 'completion_status' &&
+                                            key !== 'partial_answer' &&
+                                            key !== 'upstream_error' &&
+                                            key !== 'score_eligible' &&
+                                            key !== 'session_id' &&
+                                            key !== 'sample_index' &&
+                                            key !== 'references' &&
                                             typeof realSamples[0][key] ===
                                                 'number',
                                     )
@@ -724,6 +755,33 @@ const Reports: React.FC = () => {
                                                 overflow: 'hidden',
                                             }}
                                         >
+                                            {record.completion_status === 'failed' && (
+                                                <Alert
+                                                    type="error"
+                                                    showIcon
+                                                    message="样本执行失败"
+                                                    description={
+                                                        record.upstream_error?.message || '未知错误'
+                                                    }
+                                                    style={{ marginBottom: 16 }}
+                                                />
+                                            )}
+                                            {record.partial_answer && record.completion_status === 'failed' && (
+                                                <div style={{ marginBottom: 16 }}>
+                                                    <Text type="secondary">部分回答：</Text>
+                                                    <Paragraph
+                                                        style={{
+                                                            backgroundColor: '#fff2e8',
+                                                            padding: 12,
+                                                            borderRadius: 4,
+                                                            wordBreak: 'break-word',
+                                                            whiteSpace: 'pre-wrap',
+                                                        }}
+                                                    >
+                                                        {record.partial_answer}
+                                                    </Paragraph>
+                                                </div>
+                                            )}
                                             <Row gutter={16}>
                                                 <Col span={12}>
                                                     <Title level={5}>
