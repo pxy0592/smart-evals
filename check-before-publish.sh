@@ -39,6 +39,11 @@ check_warn() {
     return 0
 }
 
+check_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+    return 0
+}
+
 # 1. 检查必需文件
 echo -e "${BLUE}[1/8] 检查必需文件...${NC}"
 for file in README.md QUICKSTART.md CHANGELOG.md LICENSE docker-compose.yml Dockerfile .env.example .gitignore; do
@@ -150,7 +155,7 @@ echo ""
 # 8. 检查 Git 状态
 echo -e "${BLUE}[8/8] 检查 Git 状态...${NC}"
 if [ -d ".git" ]; then
-    check_warn "已经初始化 Git 仓库"
+    check_info "已经初始化 Git 仓库"
 
     # 检查未提交的更改
     if git diff-index --quiet HEAD -- 2>/dev/null; then
