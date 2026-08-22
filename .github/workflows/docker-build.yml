@@ -1,0 +1,78 @@
+name: Docker Build & Push
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'docs/**'
+      - 'images/**'
+      - '*.md'
+      - '.github/workflows/backend-ci.yml'
+      - '.github/workflows/frontend-ci.yml'
+  pull_request:
+    branches: [main, master]
+  release:
+    types: [published]
+
+env:
+  IMAGE_NAME: smart-eval
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          docker run --rm -d --name smart-eval-test -p 5080:80 ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # Wait for the container to be healthy
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5080/health; then
+              echo "✅ Container is healthy"
+              break
+            fi
+            echo "Waiting for container... ($i/30)"
+            sleep 3
+          done
+          docker logs smart-eval-test
+          docker stop smart-eval-test
+
+      - name: Push Docker image
+        if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
