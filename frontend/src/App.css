@@ -1,0 +1,14 @@
+#root {
+    min-height: 100vh;
+}
+
+.ant-layout-content {
+    overflow: auto;
+}
+
+@media (max-width: 768px) {
+    .ant-layout-content {
+        margin: 12px !important;
+        padding: 16px !important;
+    }
+}
