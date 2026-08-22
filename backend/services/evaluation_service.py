@@ -336,57 +336,60 @@ class EvaluationService:
         successful_responses = []
         failed_details = []
         total = len(dataset_samples)
-        for index, sample in enumerate(dataset_samples):
-            if cancellation_check and cancellation_check():
-                raise asyncio.CancelledError("Evaluation task cancelled")
-            session_id = str(uuid.uuid4())
-            run_id = sample_started(index, session_id, sample) if sample_started else None
-            result = await provider.query_sample(
-                question=str(sample.get("question") or sample.get("user_input") or ""),
-                assistant_id=assistant_id,
-                knowledge_base_ids=knowledge_base_ids,
-                knowledge_base_selection_mode=knowledge_base_selection_mode,
-                session_id=session_id,
-            )
-            result_dict = result.to_dict()
-            if sample_completed:
-                sample_completed(run_id, result_dict)
-            if result.score_eligible:
-                kwargs = {
-                    "user_input": str(sample.get("question") or sample.get("user_input") or ""),
-                    "response": result.answer,
-                    "retrieved_contexts": result.contexts,
-                }
-                reference = sample.get("expected_answer") or sample.get("reference")
-                if reference:
-                    kwargs["reference"] = str(reference)
-                successful_samples.append(SingleTurnSample(**kwargs))
-                successful_responses.append({
-                    "original_question": kwargs["user_input"],
-                    "answer": result.answer,
-                    "expected_answer": reference or "",
-                    "contexts": result.contexts,
-                    "references": result.references,
-                    "session_id": result.session_id,
-                    "completion_status": "completed",
-                })
-            else:
-                failed_details.append({
-                    "sample_index": index,
-                    "user_input": str(sample.get("question") or sample.get("user_input") or ""),
-                    "actual_answer": "",
-                    "partial_answer": result.partial_answer,
-                    "expected_answer": sample.get("expected_answer") or sample.get("reference") or "",
-                    "contexts": result.contexts,
-                    "references": result.references,
-                    "completion_status": "failed",
-                    "score_eligible": False,
-                    "session_id": result.session_id,
-                    "upstream_error": result.error.to_dict() if result.error else None,
-                    "metric_scores": None,
-                })
-            if progress_callback:
-                progress_callback(int((index + 1) / max(total, 1) * 50))
+        try:
+            for index, sample in enumerate(dataset_samples):
+                if cancellation_check and cancellation_check():
+                    raise asyncio.CancelledError("Evaluation task cancelled")
+                correlation_id = str(uuid.uuid4())
+                run_id = sample_started(index, correlation_id, sample) if sample_started else None
+                result = await provider.query_sample(
+                    question=str(sample.get("question") or sample.get("user_input") or ""),
+                    assistant_id=assistant_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                    knowledge_base_selection_mode=knowledge_base_selection_mode,
+                )
+                result_dict = result.to_dict()
+                if sample_completed:
+                    sample_completed(run_id, result_dict)
+                if result.score_eligible:
+                    kwargs = {
+                        "user_input": str(sample.get("question") or sample.get("user_input") or ""),
+                        "response": result.answer,
+                        "retrieved_contexts": result.contexts,
+                    }
+                    reference = sample.get("expected_answer") or sample.get("reference")
+                    if reference:
+                        kwargs["reference"] = str(reference)
+                    successful_samples.append(SingleTurnSample(**kwargs))
+                    successful_responses.append({
+                        "original_question": kwargs["user_input"],
+                        "answer": result.answer,
+                        "expected_answer": reference or "",
+                        "contexts": result.contexts,
+                        "references": result.references,
+                        "session_id": result.session_id,
+                        "completion_status": "completed",
+                    })
+                else:
+                    failed_details.append({
+                        "sample_index": index,
+                        "user_input": str(sample.get("question") or sample.get("user_input") or ""),
+                        "actual_answer": "",
+                        "partial_answer": result.partial_answer,
+                        "expected_answer": sample.get("expected_answer") or sample.get("reference") or "",
+                        "contexts": result.contexts,
+                        "references": result.references,
+                        "completion_status": "failed",
+                        "score_eligible": False,
+                        "session_id": result.session_id,
+                        "upstream_error": result.error.to_dict() if result.error else None,
+                        "metric_scores": None,
+                    })
+                if progress_callback:
+                    progress_callback(int((index + 1) / max(total, 1) * 50))
+        finally:
+            if hasattr(provider, 'cleanup_sessions'):
+                await provider.cleanup_sessions()
 
         if not successful_samples:
             raise RuntimeError("没有任何样本获得完整可评分回答")

@@ -132,12 +132,14 @@ class RAGFlowProvider(RagProvider):
             logger.exception("Error getting chunks from RAGFlow dataset %s", kb_id)
             return []
 
-    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str, session_id: str):
+    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str):
+        import uuid
+        fallback_id = str(uuid.uuid4())
         session = await self._client()
         try:
             async with session.post(f"{self.api_base}/chats/{assistant_id}/sessions", json={}, headers=self._headers()) as create_response:
                 created = await create_response.json(content_type=None)
-                upstream_session = ((created.get("data") or {}).get("id") if created.get("code") == 0 else None) or session_id
+                upstream_session = ((created.get("data") or {}).get("id") if created.get("code") == 0 else None) or fallback_id
             async with session.post(f"{self.api_base}/chats/{assistant_id}/completions", json={"question": question, "stream": False, "session_id": upstream_session}, headers=self._headers()) as response:
                 data = await response.json(content_type=None)
                 if response.status != 200 or data.get("code") != 0 or not data.get("data"):
@@ -147,4 +149,4 @@ class RAGFlowProvider(RagProvider):
                 answer = re.sub(r"\[ID:\d+\]\s*", "", str(result.get("answer") or "")).strip()
                 return RagQueryResult(provider="ragflow", session_id=str(result.get("session_id") or upstream_session), completed=bool(answer), score_eligible=bool(answer), answer=answer, contexts=[str(x.get("content")) for x in refs if x.get("content")], references=refs, error=None if answer else ProviderError("protocol", "RAGFlow 返回空答案"))
         except Exception as exc:
-            return RagQueryResult(provider="ragflow", session_id=session_id, error=ProviderError("upstream", str(exc), True))
+            return RagQueryResult(provider="ragflow", session_id=fallback_id, error=ProviderError("upstream", str(exc), True))

@@ -103,6 +103,14 @@ class RagProvider(ABC):
     async def close(self) -> None:
         return None
 
+    async def cleanup_sessions(self) -> None:
+        """Optional: clean up provider-side resources created during evaluation.
+
+        Default is a no-op. Providers that create server-side sessions
+        (e.g. IntelliQ) should override this to batch-delete them.
+        """
+        return None
+
     @abstractmethod
     async def validate_connection(self) -> dict[str, Any]: ...
 
@@ -120,7 +128,6 @@ class RagProvider(ABC):
         assistant_id: str,
         knowledge_base_ids: list[str],
         knowledge_base_selection_mode: str,
-        session_id: str,
     ) -> RagQueryResult: ...
 
     @abstractmethod

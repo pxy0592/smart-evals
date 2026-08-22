@@ -11,6 +11,7 @@ async def chunks(*values):
 @pytest.mark.asyncio
 async def test_aggregates_answer_and_references_only():
     stream = chunks(
+        b'data: {"response_type":"agent_query","content":"","done":true}\n\n',
         b'data: {"response_type":"references","knowledge_references":[{"id":"r1","content":"ctx"}],"done":false}\n\n',
         b'data: {"response_type":"answer","content":"hello ","done":false}\n\n',
         b'data: {"response_type":"thinking","content":"secret thought","done":false}\n\n',

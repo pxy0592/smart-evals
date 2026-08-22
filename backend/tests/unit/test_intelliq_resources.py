@@ -14,3 +14,27 @@ async def test_intelliq_resource_normalization(monkeypatch):
     agent=(await provider.list_assistants())[0]
     assert agent.knowledge_base_selection_mode == "selected"
     assert agent.allowed_knowledge_base_ids == ("k",)
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_http_201(monkeypatch):
+    provider=IntelliQProvider(base_url="https://example.com/api/v1",api_key="secret",connection_id="c")
+
+    class Response:
+        status = 201
+        async def json(self, content_type=None):
+            return {"success": True, "data": {"id": "session-1"}}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    class Client:
+        def post(self, *args, **kwargs):
+            return Response()
+
+    async def client():
+        return Client()
+
+    monkeypatch.setattr(provider,"_client",client)
+    assert await provider._create_session() == "session-1"

@@ -91,7 +91,7 @@ async def aggregate_intelliq_sse(chunks: AsyncIterable[bytes], session_id: str) 
                     intermediate_event_summary=event_counts,
                     error=ProviderError("upstream", message, False),
                 )
-            if payload.get("done") is True:
+            if response_type == "answer" and payload.get("done") is True:
                 completed = True
                 break
     except Exception as exc:

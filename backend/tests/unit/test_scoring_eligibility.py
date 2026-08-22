@@ -25,8 +25,8 @@ async def test_evaluation_service_generates_unique_sample_sessions(monkeypatch):
     class Provider:
         def __init__(self): self.sessions=[]
         async def query_sample(self, **kwargs):
-            self.sessions.append(kwargs["session_id"])
-            return RagQueryResult(provider="intelliq",session_id=kwargs["session_id"],completed=True,score_eligible=True,answer="a")
+            self.sessions.append("mock-session")
+            return RagQueryResult(provider="intelliq",session_id="mock-session",completed=True,score_eligible=True,answer="a")
 
     monkeypatch.setattr(module, "SingleTurnSample", Sample)
     monkeypatch.setattr(module, "EvaluationDataset", Dataset)
@@ -37,6 +37,12 @@ async def test_evaluation_service_generates_unique_sample_sessions(monkeypatch):
     monkeypatch.setattr(service,"_get_llm",lambda:None)
     monkeypatch.setattr(service,"_get_embeddings",lambda:None)
     provider=Provider()
-    result=await service.evaluate_with_provider(provider=provider,assistant_id="a",knowledge_base_ids=[],knowledge_base_selection_mode="none",dataset_id="d",selected_metrics=["metric"],dataset_samples=[{"question":"q1"},{"question":"q2"}])
-    assert len(provider.sessions) == 2 and len(set(provider.sessions)) == 2
+    sample_sessions=[]
+    def sample_started(index, session_id, sample):
+        sample_sessions.append(session_id)
+        return index
+    result=await service.evaluate_with_provider(provider=provider,assistant_id="a",knowledge_base_ids=[],knowledge_base_selection_mode="none",dataset_id="d",selected_metrics=["metric"],dataset_samples=[{"question":"q1"},{"question":"q2"}],sample_started=sample_started)
+    assert len(provider.sessions) == 2
+    assert all(sample_sessions)
+    assert len(set(sample_sessions)) == 2
     assert result["evaluation_metadata"]["success_count"] == 2

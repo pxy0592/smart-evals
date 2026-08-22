@@ -8,6 +8,8 @@ from typing import Any
 
 import aiohttp
 
+from datetime import datetime, timezone
+
 from .base import AssistantRef, KnowledgeBaseRef, ProviderCapabilities, ProviderError, RagProvider, RagQueryResult
 from .sse import aggregate_intelliq_sse
 from .url_policy import normalize_service_url
@@ -26,6 +28,7 @@ class IntelliQProvider(RagProvider):
         self.api_key = api_key
         self.connection_id = connection_id
         self.max_retries = max(0, max_retries)
+        self._session_ids: list[str] = []
         self._session: aiohttp.ClientSession | None = None
 
     async def _client(self):
@@ -193,21 +196,94 @@ class IntelliQProvider(RagProvider):
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 100))
         return result[offset : offset + limit]
 
-    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str, session_id: str):
+    async def _create_session(self) -> str | None:
+        """Create an IntelliQ session for agent-chat. Returns session ID or None on failure."""
+        try:
+            session = await self._client()
+            timestamp = datetime.now(timezone.utc).isoformat()
+            async with session.post(
+                f"{self.api_base}/sessions",
+                json={"title": f"SmartQ Eval - {timestamp}", "description": "Auto-created session for evaluation"},
+                headers=self._headers(),
+            ) as response:
+                if not 200 <= response.status < 300:
+                    text = await response.text()
+                    logger.error("IntelliQ session creation failed: HTTP %s - %s", response.status, text[:500])
+                    return None
+                data = await response.json(content_type=None)
+                sid = (data.get("data") or {}).get("id")
+                if not sid:
+                    logger.error("IntelliQ session creation response missing data.id: %s", data)
+                    return None
+                return str(sid)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.error("IntelliQ session creation network error: %s", exc)
+            return None
+
+    async def cleanup_sessions(self) -> None:
+        """Batch-delete all sessions created during this evaluation run."""
+        if not self._session_ids:
+            return
+        ids_to_delete = list(self._session_ids)
+        self._session_ids.clear()
+        try:
+            session = await self._client()
+            async with session.delete(
+                f"{self.api_base}/sessions/batch",
+                json={"ids": ids_to_delete},
+                headers=self._headers(),
+            ) as response:
+                if response.status == 200:
+                    logger.info("Deleted %d IntelliQ session(s)", len(ids_to_delete))
+                else:
+                    text = await response.text()
+                    logger.warning("IntelliQ session cleanup failed: HTTP %s - %s", response.status, text[:500])
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("IntelliQ session cleanup network error: %s", exc)
+
+    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str):
         payload: dict[str, Any] = {"query": question, "agent_id": assistant_id, "agent_enabled": True, "channel": "api"}
         if knowledge_base_selection_mode == "selected":
             payload["knowledge_base_ids"] = knowledge_base_ids
+
+        # Create a real session before calling agent-chat (FR-001)
+        real_session_id = await self._create_session()
+        if not real_session_id:
+            return RagQueryResult(
+                provider="intelliq",
+                session_id="",
+                error=ProviderError("upstream", "Session creation failed: IntelliQ returned no session ID"),
+            )
+        self._session_ids.append(real_session_id)
+
         session = await self._client()
         try:
-            async with session.post(f"{self.api_base}/agent-chat/{session_id}", json=payload, headers=self._headers("text/event-stream"), allow_redirects=False) as response:
+            async with session.post(
+                f"{self.api_base}/agent-chat/{real_session_id}",
+                json=payload,
+                headers=self._headers("text/event-stream"),
+                allow_redirects=False,
+            ) as response:
                 if response.status != 200:
                     text = await response.text()
                     error = self._error(response.status, text[:500] or f"HTTP {response.status}")
-                    return RagQueryResult(provider="intelliq", session_id=session_id, error=error)
+                    return RagQueryResult(provider="intelliq", session_id=real_session_id, error=error)
                 if "text/event-stream" not in response.headers.get("Content-Type", ""):
-                    return RagQueryResult(provider="intelliq", session_id=session_id, error=ProviderError("protocol", "IntelliQ 未返回 text/event-stream"))
-                return await aggregate_intelliq_sse(response.content.iter_any(), session_id)
+                    return RagQueryResult(
+                        provider="intelliq",
+                        session_id=real_session_id,
+                        error=ProviderError("protocol", "IntelliQ 未返回 text/event-stream"),
+                    )
+                return await aggregate_intelliq_sse(response.content.iter_any(), real_session_id)
         except asyncio.TimeoutError:
-            return RagQueryResult(provider="intelliq", session_id=session_id, error=ProviderError("timeout", "IntelliQ 回答超时", True))
+            return RagQueryResult(
+                provider="intelliq",
+                session_id=real_session_id,
+                error=ProviderError("timeout", "IntelliQ 回答超时", True),
+            )
         except aiohttp.ClientError as exc:
-            return RagQueryResult(provider="intelliq", session_id=session_id, error=ProviderError("upstream", str(exc), True))
+            return RagQueryResult(
+                provider="intelliq",
+                session_id=real_session_id,
+                error=ProviderError("upstream", str(exc), True),
+            )
