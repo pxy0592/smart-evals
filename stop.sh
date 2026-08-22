@@ -18,7 +18,7 @@ echo ""
 
 # 停止服务
 echo "停止服务..."
-docker-compose down
+docker compose down
 
 echo -e "${GREEN}✓ 服务已停止${NC}"
 echo ""

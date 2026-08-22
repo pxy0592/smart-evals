@@ -5,15 +5,23 @@
 
 FROM node:20-alpine AS frontend-builder
 
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 WORKDIR /build/frontend
 
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci && npm cache clean --force
+RUN npm config set registry "${NPM_REGISTRY}" && \
+    npm ci && \
+    npm cache clean --force
 
 COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim
+
+ARG APT_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 LABEL maintainer="RAG Evaluation Team"
 LABEL description="RAG Evaluation System - All-in-one Container"
@@ -24,9 +32,14 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
     PYTHONPATH=/app
 
-RUN apt-get update && \
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian|${APT_DEBIAN_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     nginx \
     supervisor \

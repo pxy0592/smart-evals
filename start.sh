@@ -25,7 +25,7 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # 检查 Docker Compose 是否安装
-if ! command -v docker-compose &> /dev/null; then
+if ! docker compose version &> /dev/null; then
     echo -e "${RED}错误: Docker Compose 未安装${NC}"
     echo "请先安装 Docker Compose: https://docs.docker.com/compose/install/"
     exit 1
@@ -62,13 +62,20 @@ fi
 echo "创建必需的目录..."
 mkdir -p data logs tmp/datasets tmp/evaluation/reports
 
-# 拉取最新镜像
-echo "拉取最新镜像..."
-docker-compose pull
+# 从 .env 获取镜像名称，仅在本地缺少镜像时拉取
+if [ -z "${IMAGE_NAME:-}" ]; then
+    echo -e "${RED}错误: .env 中未配置 IMAGE_NAME${NC}"
+    exit 1
+elif docker image inspect "$IMAGE_NAME" &> /dev/null; then
+    echo "本地镜像已存在，跳过拉取: $IMAGE_NAME"
+else
+    echo "本地缺少镜像，开始拉取: $IMAGE_NAME"
+    docker compose pull
+fi
 
 # 启动服务
 echo "启动服务..."
-docker-compose up -d
+docker compose up -d
 
 # 等待服务启动
 echo "等待服务启动..."
@@ -87,8 +94,8 @@ for i in {1..30}; do
         echo "  Web 界面: http://localhost:5003"
         echo "  健康检查: http://localhost:5003/health"
         echo ""
-        echo "查看日志: docker-compose logs -f"
-        echo "停止服务: docker-compose down"
+        echo "查看日志: docker compose logs -f"
+        echo "停止服务: docker compose down"
         echo ""
         exit 0
     fi
@@ -97,5 +104,5 @@ for i in {1..30}; do
 done
 
 echo -e "${YELLOW}警告: 服务可能未正常启动${NC}"
-echo "请查看日志: docker-compose logs"
+echo "请查看日志: docker compose logs"
 exit 1

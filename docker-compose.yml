@@ -1,7 +1,7 @@
 name: smart-evals
 services:
   smart-eval:
-    image: zxwei/knowflow-eval:latest
+    image: ${IMAGE_NAME:-smart_eval:latest}
     container_name: smart-eval
     restart: unless-stopped
 
