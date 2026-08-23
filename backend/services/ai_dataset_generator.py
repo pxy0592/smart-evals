@@ -1,105 +1,197 @@
+"""Generate strictly simplified-Chinese evaluation datasets from knowledge chunks."""
+
+from __future__ import annotations
+
 import json
 import logging
 import random
-from typing import Dict, Any, List, Optional
+import re
+import sqlite3
+from json import JSONDecodeError
+from typing import Any, Dict, List, Optional
+
+from opencc import OpenCC
 
 logger = logging.getLogger(__name__)
 
+_CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+_ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
+_REFUSAL_TEXTS = {"无法生成", "内容不足", "无法回答", "信息不足"}
+
 
 class AIDatasetGenerator:
-    """AI dataset generator — purely LLM-based, no templates.
-
-    The caller provides a RagProvider instance so chunk retrieval is
-    provider-agnostic instead of being hardcoded to RAGFlow.
-    """
+    """LLM dataset generator with strict structured simplified-Chinese output."""
 
     def __init__(self):
-        pass
+        self._to_simplified = OpenCC("t2s")
+        self.last_generation_error: str | None = None
+        self.generation_stats: dict[str, int] = {}
+
+    def _record_rejection(
+        self, category: str, question_type: str, chunk_id: str, attempt: int
+    ) -> None:
+        self.generation_stats[category] = self.generation_stats.get(category, 0) + 1
+        logger.warning(
+            "QA generation rejected category=%s question_type=%s chunk_id=%s attempt=%d",
+            category,
+            question_type,
+            chunk_id,
+            attempt,
+        )
 
     def get_knowledge_base_chunks(
         self, provider, kb_id: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Retrieve chunks from a knowledge base through the given provider.
-
-        Returns empty list when the provider returns no chunks (no mock fallback for real providers).
-        """
         try:
-            logger.info("Getting chunks from KB %s via provider %s", kb_id, type(provider).__name__)
+            logger.info(
+                "Getting chunks from KB %s via provider %s",
+                kb_id,
+                type(provider).__name__,
+            )
             chunks = provider.get_chunks(kb_id, limit)
             if chunks:
-                logger.info("Successfully retrieved %d chunks from KB %s", len(chunks), kb_id)
+                logger.info(
+                    "Successfully retrieved %d chunks from KB %s", len(chunks), kb_id
+                )
             else:
                 logger.warning("No chunks found in KB %s", kb_id)
             return chunks
-        except Exception as e:
-            logger.error("Error getting chunks from KB %s: %s", kb_id, e)
+        except Exception as error:
+            logger.error("Error getting chunks from KB %s: %s", kb_id, error)
             return []
 
-    def _get_mock_chunks(self) -> List[Dict[str, Any]]:
-        """获取模拟chunks数据用于测试"""
-        return [
-            {
-                "id": "chunk_1",
-                "content": "人工智能（Artificial Intelligence, AI）是指通过计算机系统模拟、延伸和扩展人类智能的技术。AI系统能够执行通常需要人类智能才能完成的任务，如视觉感知、语音识别、决策制定和语言翻译等。深度学习是当前AI领域最主流的技术路线，通过多层神经网络从海量数据中自动学习特征表示，在图像识别、自然语言处理等领域取得了突破性进展。",
-                "doc_name": "AI基础知识.pdf",
-                "page_number": 1,
-            },
-            {
-                "id": "chunk_2",
-                "content": "机器学习是人工智能的一个重要分支，它使计算机能够在没有明确编程的情况下学习和改进性能。机器学习算法通过分析大量数据来识别模式，并基于这些模式做出预测或决策。常见的机器学习算法包括决策树、支持向量机、随机森林和神经网络等。监督学习、无监督学习和强化学习是机器学习的三大主要范式，各自适用于不同的应用场景。",
-                "doc_name": "机器学习指南.pdf",
-                "page_number": 2,
-            },
-        ]
-
     def call_llm_for_generation(self, prompt: str) -> Optional[str]:
-        """调用大模型生成内容"""
+        """Call the saved default LLM configuration without logging credentials."""
         try:
-            import sqlite3
-            import os
             from langchain_openai import ChatOpenAI
 
-            db_path = os.getenv("DATABASE_PATH", "data/evaluation.db")
+            db_path = __import__("os").getenv("DATABASE_PATH", "data/evaluation.db")
             conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM api_configs WHERE is_default = 1 LIMIT 1")
-            result = cursor.fetchone()
+            row = conn.execute(
+                "SELECT provider, api_key, endpoint, model, temperature, max_tokens "
+                "FROM api_configs WHERE is_default = 1 LIMIT 1"
+            ).fetchone()
             conn.close()
-            if not result:
+            if not row:
                 logger.error("No default API configuration found")
-                return
-            else:
-                (
-                    _,
-                    _,
-                    provider,
-                    api_key,
-                    endpoint,
-                    model,
-                    _,
-                    temperature,
-                    max_tokens,
-                    _,
-                    _,
-                    _,
-                ) = result
-                logger.info(f"Using LLM: {model} from {provider}")
-                llm = ChatOpenAI(
-                    model=model,
-                    api_key=api_key,
-                    base_url=endpoint,
-                    temperature=temperature,
-                    max_tokens=min(max_tokens, 1000),
-                    timeout=30,
-                )
-                response = llm.invoke(prompt)
-                logger.info(
-                    f"LLM generation successful, response length: {len(response.content)}"
-                )
-                return response.content
-        except Exception as e:
-            logger.error(f"LLM generation failed: {str(e)}")
+                return None
+            provider, api_key, endpoint, model, temperature, max_tokens = row
+            try:
+                configured_max_tokens = int(max_tokens)
+            except (TypeError, ValueError):
+                configured_max_tokens = 2000
+            # Preserve a user-configured budget above this threshold.  Below it,
+            # reserve enough output for providers that expose a reasoning trace
+            # before their final JSON object.
+            effective_max_tokens = max(2048, min(configured_max_tokens, 8192))
+            logger.info(
+                "Using LLM model=%s provider=%s max_tokens=%d for AI dataset generation",
+                model,
+                provider,
+                effective_max_tokens,
+            )
+            response = ChatOpenAI(
+                model=model,
+                api_key=api_key,
+                base_url=endpoint,
+                temperature=temperature,
+                max_tokens=effective_max_tokens,
+                timeout=30,
+            ).invoke(prompt)
+            content = str(response.content or "")
+            logger.info("LLM generation successful, response length: %d", len(content))
+            return content
+        except Exception as error:
+            logger.error("LLM generation failed: %s", error)
             return None
+
+    @staticmethod
+    def _strip_code_fence(value: str) -> str:
+        value = value.strip()
+        if value.startswith("```"):
+            first_newline = value.find("\n")
+            if first_newline >= 0:
+                value = value[first_newline + 1 :]
+            if value.rstrip().endswith("```"):
+                value = value.rstrip()[:-3]
+        return value.strip()
+
+    def _extract_json_object(self, response: str) -> Optional[dict[str, Any]]:
+        """Extract the final structured QA object from a possibly verbose response.
+
+        Some compatible providers prepend a visible reasoning trace.  That trace can
+        quote JSON examples from the prompt, including an error object, so parsing
+        the first JSON dictionary is not reliable.  Only a dictionary with all
+        required QA fields qualifies, and the final such dictionary wins.
+        """
+        cleaned = self._strip_code_fence(response)
+        decoder = json.JSONDecoder()
+        qa_candidates: list[dict[str, Any]] = []
+        for index, char in enumerate(cleaned):
+            if char != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(cleaned[index:])
+            except JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and {"question", "expected_answer", "context"} <= value.keys()
+            ):
+                qa_candidates.append(value)
+        return qa_candidates[-1] if qa_candidates else None
+
+    def _is_structured_refusal(self, response: str) -> bool:
+        """Return true only if the complete response is a supported refusal JSON."""
+        cleaned = self._strip_code_fence(response)
+        try:
+            value, end_index = json.JSONDecoder().raw_decode(cleaned)
+        except JSONDecodeError:
+            return False
+        if cleaned[end_index:].strip() or not isinstance(value, dict):
+            return False
+        error = self._normalize_simplified_chinese(value.get("error"))
+        return error in _REFUSAL_TEXTS
+
+    def _normalize_simplified_chinese(self, value: Any) -> str:
+        return self._to_simplified.convert(str(value or "").strip())
+
+    def _is_simplified_chinese_content(self, value: str, minimum_cjk: int) -> bool:
+        compact = re.sub(r"[\s\d\W_]", "", value, flags=re.UNICODE)
+        cjk_count = len(_CHINESE_RE.findall(value))
+        if cjk_count < minimum_cjk or not compact:
+            return False
+        if _ASCII_LETTER_RE.search(value):
+            return False
+        return cjk_count / len(compact) >= 0.8
+
+    @staticmethod
+    def _is_exact_refusal(value: str) -> bool:
+        normalized = value.strip().strip("。！？! ")
+        return normalized in _REFUSAL_TEXTS
+
+    def _build_prompt(self, content: str, question_type: str) -> str:
+        question_type_map = {
+            "factual": "事实性问题",
+            "analytical": "分析性问题",
+            "application": "应用性问题",
+            "comparison": "比较性问题",
+            "explanation": "解释性问题",
+        }
+        return f"""你是专业的中文知识库问答数据生成助手。请仅根据以下文档内容生成一个{question_type_map.get(question_type, '事实性问题')}问答对。
+
+文档内容：
+{content}
+
+严格要求：
+1. 源文档可能是中文、英文或混合语言。无论源文档语言，question、expected_answer、context 三个字段都必须使用简体中文，不能包含英文、繁体中文或其他语言描述。
+2. question 长度必须为 5-100 个字符，清晰且可由文档回答。
+3. expected_answer 长度必须为 20-500 个字符，只能依据文档内容；源文档为英文时可忠实翻译为简体中文。
+4. context 长度必须为 20-800 个字符，是支持答案的简体中文上下文；源文档为英文时可使用忠实的简体中文翻译或摘要。
+5. 只输出一个 JSON 对象，不要 Markdown、解释、前缀或后缀。
+6. 不要输出思考过程、分析步骤、推理内容或提示词复述。
+7. 文档内容不足以生成时，只输出一个 JSON 错误对象，error 字段值为“内容不足”。
+8. 成功时，JSON 对象必须且只能包含 question、expected_answer、context 三个字符串字段。"""
 
     def generate_qa_pair_with_llm(
         self,
@@ -107,182 +199,173 @@ class AIDatasetGenerator:
         question_type: str,
         max_retries: int = 2,
     ) -> Optional[Dict[str, Any]]:
-        """使用 LLM 生成并校验一个问答对。"""
-        content = chunk.get("content", "").strip()
-        doc_name = chunk.get("doc_name", "未知文档")
-        question_type_map = {
-            "factual": "事实性问题（询问具体信息、定义、事实等）",
-            "analytical": "分析性问题（要求分析原理、机制、过程等）",
-            "application": "应用性问题（询问如何使用、应用场景等）",
-            "comparison": "比较性问题（对比不同概念、方法的异同）",
-            "explanation": "解释性问题（询问原因、背景、重要性等）",
-        }
-        question_desc = question_type_map.get(question_type, question_type)
-        prompt = f"""你是专业的问答生成助手。基于以下文档内容生成{question_desc}。
+        """Generate one validated simplified-Chinese QA pair from one chunk."""
+        content = self._normalize_simplified_chinese(chunk.get("content", ""))
+        chunk_id = str(chunk.get("id", ""))
+        doc_name = self._normalize_simplified_chinese(chunk.get("doc_name", "未知文档"))
+        if len(content.strip()) < 50:
+            self._record_rejection("source_chunk_too_short", question_type, chunk_id, 0)
+            return None
 
-文档内容：
-{content}
-
-严格要求：
-1. 问题必须清晰明确，长度在5-100字之间。
-2. 答案必须来自文档原文，长度在20-500字之间。
-3. 问题和答案必须来自同一段文档内容。
-4. 如果内容不足，请回复“无法生成”。
-
-请严格返回 JSON：{{"question": "问题", "expected_answer": "摘录的原文"}}"""
-
-        for attempt in range(max_retries):
+        prompt = self._build_prompt(content, question_type)
+        for attempt in range(1, max_retries + 1):
             response = self.call_llm_for_generation(prompt)
             if not response:
-                logger.warning("LLM generation failed, attempt %s", attempt + 1)
+                self._record_rejection(
+                    "llm_transport_failure", question_type, chunk_id, attempt
+                )
                 continue
-            if "无法生成" in response:
-                logger.info("LLM determined insufficient content for %s", question_type)
+
+            normalized_response = self._normalize_simplified_chinese(response)
+            if self._is_exact_refusal(
+                normalized_response
+            ) or self._is_structured_refusal(response):
+                self._record_rejection(
+                    "content_insufficient", question_type, chunk_id, attempt
+                )
                 return None
 
-            response = response.strip()
-            if "```json" in response:
-                start = response.find("```json") + 7
-                end = response.find("```", start)
-                if end > start:
-                    response = response[start:end].strip()
-            elif "```" in response:
-                start = response.find("```") + 3
-                end = response.find("```", start)
-                if end > start:
-                    response = response[start:end].strip()
-
-            try:
-                qa_data = json.loads(response)
-            except json.JSONDecodeError as error:
-                logger.warning("JSON parse error (attempt %s): %s", attempt + 1, error)
-                continue
-
-            if isinstance(qa_data, list):
-                qa_data = (
-                    qa_data[0] if qa_data and isinstance(qa_data[0], dict) else None
+            qa_data = self._extract_json_object(response)
+            if qa_data is None:
+                self._record_rejection(
+                    "json_parse_error", question_type, chunk_id, attempt
                 )
-            if not isinstance(qa_data, dict):
-                logger.warning("Invalid response type on attempt %s", attempt + 1)
                 continue
 
-            question = str(qa_data.get("question", "")).strip()
-            expected_answer = str(qa_data.get("expected_answer", "")).strip()
-            if not 5 <= len(question) <= 150:
-                logger.warning("Question length invalid on attempt %s", attempt + 1)
+            question = self._normalize_simplified_chinese(qa_data.get("question"))
+            expected_answer = self._normalize_simplified_chinese(
+                qa_data.get("expected_answer")
+            )
+            context = self._normalize_simplified_chinese(
+                qa_data.get("context") or content
+            )
+            if not 5 <= len(question) <= 100:
+                self._record_rejection(
+                    "invalid_question_length", question_type, chunk_id, attempt
+                )
                 continue
-            if not 10 <= len(expected_answer) <= 800:
-                logger.warning("Answer length invalid on attempt %s", attempt + 1)
+            if not 20 <= len(expected_answer) <= 500:
+                self._record_rejection(
+                    "invalid_answer_length", question_type, chunk_id, attempt
+                )
                 continue
-            if len(expected_answer.replace("#", "").replace("\n", "").strip()) < 20:
-                logger.warning("Answer is too simple on attempt %s", attempt + 1)
+            if not 20 <= len(context) <= 800:
+                self._record_rejection(
+                    "invalid_context_length", question_type, chunk_id, attempt
+                )
+                continue
+            if not (
+                self._is_simplified_chinese_content(question, 5)
+                and self._is_simplified_chinese_content(expected_answer, 20)
+                and self._is_simplified_chinese_content(context, 20)
+            ):
+                self._record_rejection(
+                    "non_simplified_chinese_output", question_type, chunk_id, attempt
+                )
                 continue
 
             return {
                 "question": question,
                 "expected_answer": expected_answer,
-                "contexts": [content],
+                "contexts": [context],
                 "source_doc": doc_name,
                 "question_type": question_type,
-                "chunk_id": chunk.get("id", ""),
+                "chunk_id": chunk_id,
                 "generation_method": "llm",
-                "attempts_used": attempt + 1,
+                "attempts_used": attempt,
             }
 
-        logger.warning(
-            "Failed to generate a valid QA pair after %s attempts", max_retries
+        self._record_rejection(
+            "retries_exhausted", question_type, chunk_id, max_retries
         )
         return None
 
     def generate_dataset_from_kb(
         self, provider, kb_id: str, sample_count: int, question_types: List[str]
     ) -> List[Dict[str, Any]]:
-        """Generate a dataset from a knowledge base through the given provider."""
+        """Generate exactly the requested number of valid simplified-Chinese samples."""
+        self.last_generation_error = None
+        self.generation_stats = {}
         try:
             logger.info(
-                "Starting AI dataset generation for KB %s, %d samples", kb_id, sample_count
+                "Starting AI dataset generation for KB %s, %d samples",
+                kb_id,
+                sample_count,
             )
             chunks = self.get_knowledge_base_chunks(
                 provider, kb_id, limit=min(500, sample_count * 50)
             )
             if not chunks:
-                logger.error("No chunks retrieved from knowledge base")
+                self.last_generation_error = "知识库未提供可用内容块"
                 return []
-            else:
-                logger.info(f"Retrieved {len(chunks)} chunks from knowledge base")
-                samples = []
-                failed_chunks = set()
-                chunk_attempt_count = {}
-                for i in range(sample_count):
-                    logger.info(f"Generating sample {i + 1}/{sample_count}...")
-                    question_type = random.choice(question_types)
-                    qa_pair = None
-                    max_chunk_tries = 10
-                    for _ in range(max_chunk_tries):
-                        available_chunks = [
-                            c
-                            for c in chunks
-                            if not c.get("id") in failed_chunks
-                            or chunk_attempt_count.get(c.get("id"), 0) == 0
-                        ]
-                        if not available_chunks:
-                            logger.warning(
-                                f"No more available chunks for sample {i + 1}"
-                            )
-                            break
-                        else:
-                            chunk = random.choice(available_chunks)
-                            chunk_id = chunk.get("id")
-                            chunk_content = chunk.get("content", "")
-                            chunk_attempt_count[chunk_id] = 1
-                            if len(chunk_content) < 128:
-                                logger.info(
-                                    f"Skipping chunk {chunk_id}: too short ({len(chunk_content)} chars)"
-                                )
-                                failed_chunks.add(chunk_id)
-                                continue
-                            else:
-                                cleaned_content = (
-                                    chunk_content.replace("#", "")
-                                    .replace("\n", "")
-                                    .replace(" ", "")
-                                    .strip()
-                                )
-                                if len(cleaned_content) < 50:
-                                    logger.info(
-                                        f"Skipping chunk {chunk_id}: insufficient content after cleaning"
-                                    )
-                                    failed_chunks.add(chunk_id)
-                                    continue
-                                else:
-                                    logger.info(
-                                        f"Trying chunk {chunk_id} for sample {i + 1} (content length: {len(chunk_content)} chars)"
-                                    )
-                                    qa_pair = self.generate_qa_pair_with_llm(
-                                        chunk, question_type, max_retries=1
-                                    )
-                                    if qa_pair:
-                                        logger.info(
-                                            f"✅ Successfully generated QA pair using chunk {chunk_id}"
-                                        )
-                                        break
-                                    else:
-                                        logger.warning(
-                                            f"❌ Failed to generate valid QA pair from chunk {chunk_id}"
-                                        )
-                                        failed_chunks.add(chunk_id)
-                    if qa_pair:
-                        samples.append(qa_pair)
-                    else:
-                        logger.warning(
-                            f"Failed to generate sample {i + 1} after trying multiple chunks"
-                        )
-                logger.info(f"Generation completed: {len(samples)} total samples")
-                logger.info(f"  - Failed chunks: {len(failed_chunks)}")
-                return samples
-        except Exception as e:
-            logger.error(f"Failed to generate dataset from KB {kb_id}: {str(e)}")
-            import traceback
 
-            logger.error(f"Detailed error: {traceback.format_exc()}")
+            candidates = [
+                chunk
+                for chunk in chunks
+                if len(str(chunk.get("content", "")).strip()) >= 50
+            ]
+            if not candidates:
+                self.last_generation_error = "知识库中没有长度足够的内容块用于生成问答"
+                return []
+
+            samples: list[dict[str, Any]] = []
+            failed_chunk_ids: set[str] = set()
+            used_chunk_ids: set[str] = set()
+            for index in range(sample_count):
+                logger.info("Generating sample %d/%d...", index + 1, sample_count)
+                qa_pair = None
+                question_type = random.choice(question_types or ["factual"])
+                available = [
+                    chunk
+                    for chunk in candidates
+                    if str(chunk.get("id", "")) not in failed_chunk_ids
+                    and str(chunk.get("id", "")) not in used_chunk_ids
+                ]
+                max_chunk_tries = min(15, len(available))
+                for _ in range(max_chunk_tries):
+                    if not available:
+                        break
+                    chunk = random.choice(available)
+                    chunk_id = str(chunk.get("id", ""))
+                    available = [
+                        item
+                        for item in available
+                        if str(item.get("id", "")) != chunk_id
+                    ]
+                    logger.info(
+                        "Trying chunk %s for sample %d (content length: %d chars)",
+                        chunk_id,
+                        index + 1,
+                        len(str(chunk.get("content", ""))),
+                    )
+                    qa_pair = self.generate_qa_pair_with_llm(
+                        chunk, question_type, max_retries=2
+                    )
+                    if qa_pair:
+                        used_chunk_ids.add(chunk_id)
+                        logger.info(
+                            "Generated valid simplified-Chinese QA pair using chunk %s",
+                            chunk_id,
+                        )
+                        break
+                    failed_chunk_ids.add(chunk_id)
+
+                if not qa_pair:
+                    self.last_generation_error = f"只能生成 {len(samples)}/{sample_count} 个符合简体中文要求的有效样本"
+                    logger.error(
+                        "AI dataset generation stopped: %s", self.last_generation_error
+                    )
+                    return []
+                samples.append(qa_pair)
+
+            logger.info(
+                "Generation completed: %d/%d samples; rejection_stats=%s",
+                len(samples),
+                sample_count,
+                self.generation_stats,
+            )
+            return samples
+        except Exception as error:
+            logger.exception("Failed to generate dataset from KB %s", kb_id)
+            self.last_generation_error = f"AI 数据集生成异常：{str(error)[:300]}"
             return []

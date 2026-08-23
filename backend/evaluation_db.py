@@ -607,11 +607,14 @@ def generate_ai_dataset():
                     sample_count=sample_count,
                     question_types=question_types,
                 )
-                if not samples:
+                if len(samples) != sample_count:
                     dataset_manager.update_dataset_status(
                         dataset_id,
                         "failed",
-                        error_message="Failed to generate samples from knowledge base",
+                        error_message=(
+                            generator.last_generation_error
+                            or f"未能生成请求的 {sample_count} 个有效样本"
+                        ),
                     )
                     return
                 storage_path = Path("tmp/datasets")
@@ -624,6 +627,13 @@ def generate_ai_dataset():
                     "completed",
                     progress=100,
                     num_samples=len(samples),
+                    normalized_storage_path=str(file_path),
+                    normalization_status="completed",
+                    sample_fields=[
+                        "question",
+                        "expected_answer",
+                        "contexts",
+                    ],
                     has_reference=any(
                         ("expected_answer" in sample for sample in samples)
                     ),
