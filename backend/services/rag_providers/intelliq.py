@@ -77,10 +77,50 @@ class IntelliQProvider(RagProvider):
         knowledge, assistants = await asyncio.gather(self.list_knowledge_bases(limit=100), self.list_assistants(limit=100))
         return {"knowledge_base_count": len(knowledge), "assistant_count": len(assistants)}
 
+    async def _get_agent_config(self, assistant_id: str) -> dict[str, Any]:
+        """Return the selected IntelliQ Agent configuration for KB filtering."""
+        payload = await self._get_json(f"/agents/{assistant_id}")
+        agent = payload.get("data")
+        if not isinstance(agent, dict):
+            raise RuntimeError("protocol:IntelliQ agent detail response missing data")
+        config = agent.get("config") or {}
+        if not isinstance(config, dict):
+            raise RuntimeError("protocol:IntelliQ agent detail response has invalid config")
+        return config
+
     async def list_knowledge_bases(self, **params):
-        query = {k: v for k, v in {"agent_id": params.get("assistant_id")}.items() if v}
-        payload = await self._get_json("/knowledge-bases", query)
+        """List tenant-accessible KBs and optionally filter them by Agent config.
+
+        IntelliQ rejects ``/knowledge-bases?agent_id=...`` for shared Agents when
+        the API key is not an Agent collaborator.  The external IntelliQ frontend
+        instead reads the Agent configuration first, then filters the current
+        tenant's accessible knowledge-base list locally.  Keep that behavior here
+        so browser clients never need the IntelliQ credential.
+        """
+        assistant_id = str(params.get("assistant_id") or "").strip()
+        mode = None
+        configured_ids: set[str] = set()
+        if assistant_id:
+            config = await self._get_agent_config(assistant_id)
+            mode = self._normalize_mode(config)
+            if mode is None:
+                raise RuntimeError("validation:IntelliQ agent knowledge-base mode is missing or unsupported")
+            configured_ids = {
+                str(value)
+                for value in config.get("knowledge_bases")
+                or config.get("knowledge_base_ids")
+                or []
+                if str(value)
+            }
+
+        # Do not pass agent_id here.  This request is tenant/API-key scoped.
+        payload = await self._get_json("/knowledge-bases")
         rows = payload.get("data") or []
+        if assistant_id and mode == "none":
+            rows = []
+        elif assistant_id and mode == "selected":
+            rows = [row for row in rows if str(row.get("id")) in configured_ids]
+
         search = str(params.get("search") or "").lower()
         result = []
         for row in rows:
