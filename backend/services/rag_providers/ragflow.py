@@ -132,7 +132,7 @@ class RAGFlowProvider(RagProvider):
             logger.exception("Error getting chunks from RAGFlow dataset %s", kb_id)
             return []
 
-    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str):
+    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str, on_session_created=None):
         import uuid
         fallback_id = str(uuid.uuid4())
         session = await self._client()

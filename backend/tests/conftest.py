@@ -30,6 +30,7 @@ def secure_env(monkeypatch, tmp_path):
         module.config_manager = module.dataset_manager = module.task_manager = None
         module.report_manager = module.metrics_manager = module.evaluation_service = None
         module._stale_tasks_recovered = False
+        module._session_cleanup_recovered = False
     yield tmp_path
     database.db_manager = None
     db.config_manager = db.dataset_manager = db.task_manager = db.report_manager = None
@@ -38,3 +39,4 @@ def secure_env(monkeypatch, tmp_path):
         module.config_manager = module.dataset_manager = module.task_manager = None
         module.report_manager = module.metrics_manager = module.evaluation_service = None
         module._stale_tasks_recovered = False
+        module._session_cleanup_recovered = False

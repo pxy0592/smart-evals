@@ -49,6 +49,7 @@ task_manager = None
 report_manager = None
 metrics_manager = None
 _stale_tasks_recovered = False
+_session_cleanup_recovered = False
 
 
 class NaNSafeJSONEncoder(json.JSONEncoder):
@@ -77,6 +78,7 @@ def init_services():
     global task_manager
     global config_manager
     global _stale_tasks_recovered
+    global _session_cleanup_recovered
     if not config_manager:
         config_manager = get_config_manager()
         logger.info("ConfigManager initialized")
@@ -111,6 +113,9 @@ def init_services():
                 interrupted_at=datetime.now().isoformat(),
             )
         _stale_tasks_recovered = True
+    if task_manager and not _session_cleanup_recovered:
+        _recover_pending_session_cleanups()
+        _session_cleanup_recovered = True
 
 
 def init_evaluation_service(force_reload=False):
@@ -808,9 +813,29 @@ def run_evaluation_task(task_id: str):
         attempts = [row for row in task_manager.db.get_final_sample_runs(task_id) if row["sample_index"] == index]
         return task_manager.db.create_sample_run({"task_id": task_id, "sample_index": index, "attempt": len(attempts) + 1, "session_id": session_id, "question": str(sample.get("question") or sample.get("user_input") or "")})
 
+    def sample_session_created(run_id, provider_session_id):
+        if run_id is not None:
+            task_manager.db.mark_sample_session_created(run_id, provider_session_id)
+
     def sample_completed(run_id, result):
         if run_id is not None:
             task_manager.db.complete_sample_run(run_id, result)
+
+    cleanup_warning = {}
+
+    def session_cleanup_completed(result, session_run_ids):
+        task_manager.db.mark_session_cleanup_result(
+            list(session_run_ids.keys()),
+            result.cleaned_ids,
+            result.failed_ids,
+            result.error.to_dict() if result.error else None,
+        )
+        if result.failed_ids:
+            cleanup_warning["value"] = {
+                "code": "intelliq_session_cleanup_failed",
+                "message": result.error.message if result.error else "IntelliQ Session cleanup failed",
+                "failed_sessions": len(result.failed_ids),
+            }
 
     loop = asyncio.new_event_loop()
     try:
@@ -826,7 +851,9 @@ def run_evaluation_task(task_id: str):
             dataset_samples=samples,
             progress_callback=progress,
             sample_started=sample_started,
+            sample_session_created=sample_session_created,
             sample_completed=sample_completed,
+            session_cleanup_completed=session_cleanup_completed,
             cancellation_check=cancelled,
         ))
         metadata = evaluation_result.get("evaluation_metadata", {})
@@ -835,6 +862,11 @@ def run_evaluation_task(task_id: str):
         if scored <= 0:
             raise RuntimeError("没有任何样本获得完整可评分回答")
         warning = {"code": "partial_sample_failure", "message": f"{failed} 个样本执行失败", "failed_samples": failed} if failed else None
+        if cleanup_warning.get("value"):
+            if warning:
+                warning["session_cleanup_warning"] = cleanup_warning["value"]
+            else:
+                warning = cleanup_warning["value"]
         source_snapshot = {
             "provider": task.get("rag_provider", "ragflow"),
             "connection_id": task.get("rag_connection_id"),
@@ -865,7 +897,7 @@ def run_evaluation_task(task_id: str):
             "success_rate": scored / len(samples),
             "warning": warning,
         })
-        task_manager.update_task_status(task_id, "completed", progress=100, processed_samples=len(samples), scored_sample_count=scored, failed_sample_count=failed, has_warnings=bool(failed), outcome="partially_succeeded" if failed else "succeeded")
+        task_manager.update_task_status(task_id, "completed", progress=100, processed_samples=len(samples), scored_sample_count=scored, failed_sample_count=failed, has_warnings=bool(failed or cleanup_warning.get("value")), outcome="partially_succeeded" if failed else "succeeded")
     except asyncio.CancelledError:
         task_manager.update_task_status(task_id, "cancelled", outcome="cancelled")
     except Exception as exc:
@@ -1040,6 +1072,28 @@ def delete_reports_batch():
     except Exception as e:
         logger.error(f"Failed to batch delete reports: {str(e)}")
         return (jsonify({"error": "Failed to batch delete reports"}), 500)
+
+
+def _recover_pending_session_cleanups():
+    """Best-effort startup compensation for persisted IntelliQ Session cleanup work."""
+    for group in task_manager.db.get_pending_session_cleanup_groups():
+        connection = RagConnectionService().get_connection(
+            group["rag_connection_id"], include_secret=True
+        )
+        if not connection:
+            logger.warning("Skipping pending Session cleanup: connection %s unavailable", group["rag_connection_id"])
+            continue
+        provider = create_provider(connection, connection.get("api_key"))
+        try:
+            result = _run_async(provider.cleanup_session_ids(group["session_ids"]))
+            task_manager.db.mark_session_cleanup_result(
+                group["session_ids"], result.cleaned_ids, result.failed_ids,
+                result.error.to_dict() if result.error else None,
+            )
+        except Exception as exc:
+            logger.warning("Pending IntelliQ Session cleanup failed: %s", str(exc)[:300])
+        finally:
+            _run_async(provider.close())
 
 
 def _run_async(coro):

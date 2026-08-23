@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import inspect
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -10,7 +12,7 @@ import aiohttp
 
 from datetime import datetime, timezone
 
-from .base import AssistantRef, KnowledgeBaseRef, ProviderCapabilities, ProviderError, RagProvider, RagQueryResult
+from .base import AssistantRef, KnowledgeBaseRef, ProviderCapabilities, ProviderError, RagProvider, RagQueryResult, SessionCleanupResult, SessionCreationResult
 from .sse import aggregate_intelliq_sse
 from .url_policy import normalize_service_url
 
@@ -196,65 +198,126 @@ class IntelliQProvider(RagProvider):
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 100))
         return result[offset : offset + limit]
 
-    async def _create_session(self) -> str | None:
-        """Create an IntelliQ session for agent-chat. Returns session ID or None on failure."""
+    @staticmethod
+    def _upstream_message(payload: Any, fallback: str) -> str:
+        if isinstance(payload, dict):
+            error = payload.get("error") or {}
+            if isinstance(error, dict):
+                code = error.get("code")
+                message = error.get("message") or error.get("details") or fallback
+                return f"[{code}] {message}" if code is not None else str(message)
+            return str(payload.get("message") or fallback)
+        return fallback
+
+    async def _create_session(self, title: str | None = None) -> SessionCreationResult:
+        """Create a real IntelliQ Session without blind retrying non-idempotent POST."""
         try:
             session = await self._client()
             timestamp = datetime.now(timezone.utc).isoformat()
             async with session.post(
                 f"{self.api_base}/sessions",
-                json={"title": f"SmartQ Eval - {timestamp}", "description": "Auto-created session for evaluation"},
+                json={
+                    "title": title or f"SmartQ Eval - {timestamp}",
+                    "description": "Auto-created session for evaluation",
+                },
                 headers=self._headers(),
+                allow_redirects=False,
             ) as response:
+                try:
+                    payload = await response.json(content_type=None)
+                except (ValueError, aiohttp.ContentTypeError):
+                    payload = None
                 if not 200 <= response.status < 300:
-                    text = await response.text()
-                    logger.error("IntelliQ session creation failed: HTTP %s - %s", response.status, text[:500])
-                    return None
-                data = await response.json(content_type=None)
-                sid = (data.get("data") or {}).get("id")
-                if not sid:
-                    logger.error("IntelliQ session creation response missing data.id: %s", data)
-                    return None
-                return str(sid)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            logger.error("IntelliQ session creation network error: %s", exc)
-            return None
+                    return SessionCreationResult(
+                        error=self._error(
+                            response.status,
+                            self._upstream_message(payload, f"HTTP {response.status}"),
+                        )
+                    )
+                if not isinstance(payload, dict):
+                    return SessionCreationResult(error=ProviderError("protocol", "Session creation returned non-JSON response", False, response.status))
+                if payload.get("success") is not True:
+                    return SessionCreationResult(error=ProviderError("session_creation", self._upstream_message(payload, "Session creation was rejected"), False, response.status))
+                session_id = (payload.get("data") or {}).get("id")
+                if not isinstance(session_id, str) or not session_id.strip():
+                    return SessionCreationResult(error=ProviderError("protocol", "Session creation response missing data.id", False, response.status))
+                return SessionCreationResult(session_id=session_id)
+        except asyncio.TimeoutError:
+            return SessionCreationResult(error=ProviderError("session_creation", "IntelliQ session creation timed out", False))
+        except aiohttp.ClientError as exc:
+            return SessionCreationResult(error=ProviderError("session_creation", f"IntelliQ session creation network error: {str(exc)[:300]}", False))
 
-    async def cleanup_sessions(self) -> None:
-        """Batch-delete all sessions created during this evaluation run."""
-        if not self._session_ids:
-            return
-        ids_to_delete = list(self._session_ids)
-        self._session_ids.clear()
-        try:
-            session = await self._client()
-            async with session.delete(
-                f"{self.api_base}/sessions/batch",
-                json={"ids": ids_to_delete},
-                headers=self._headers(),
-            ) as response:
-                if response.status == 200:
-                    logger.info("Deleted %d IntelliQ session(s)", len(ids_to_delete))
-                else:
-                    text = await response.text()
-                    logger.warning("IntelliQ session cleanup failed: HTTP %s - %s", response.status, text[:500])
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            logger.warning("IntelliQ session cleanup network error: %s", exc)
+    async def cleanup_session_ids(self, session_ids: list[str]) -> SessionCleanupResult:
+        """Delete only known real Session IDs and retain failures for compensation."""
+        ids = list(dict.fromkeys(session_id for session_id in session_ids if session_id))
+        if not ids:
+            return SessionCleanupResult()
+        batch_size = max(1, int(os.getenv("INTELLIQ_SESSION_CLEANUP_BATCH_SIZE", "100")))
+        cleaned: list[str] = []
+        failed: list[str] = []
+        last_error: ProviderError | None = None
+        session = await self._client()
+        for start in range(0, len(ids), batch_size):
+            batch = ids[start : start + batch_size]
+            try:
+                async with session.delete(
+                    f"{self.api_base}/sessions/batch",
+                    json={"ids": batch},
+                    headers=self._headers(),
+                    allow_redirects=False,
+                ) as response:
+                    try:
+                        payload = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        payload = None
+                    if 200 <= response.status < 300 and isinstance(payload, dict) and payload.get("success") is True:
+                        cleaned.extend(batch)
+                    else:
+                        failed.extend(batch)
+                        message = self._upstream_message(payload, f"HTTP {response.status}")
+                        last_error = self._error(response.status, message) if not 200 <= response.status < 300 else ProviderError("protocol", message, False, response.status)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                failed.extend(batch)
+                last_error = ProviderError("session_cleanup", f"IntelliQ session cleanup network error: {str(exc)[:300]}", True)
+        return SessionCleanupResult(cleaned_ids=cleaned, failed_ids=failed, error=last_error)
 
-    async def query_sample(self, *, question: str, assistant_id: str, knowledge_base_ids: list[str], knowledge_base_selection_mode: str):
+    async def cleanup_sessions(self) -> SessionCleanupResult:
+        result = await self.cleanup_session_ids(self._session_ids)
+        cleaned = set(result.cleaned_ids)
+        self._session_ids = [session_id for session_id in self._session_ids if session_id not in cleaned]
+        if result.failed_ids:
+            logger.warning("IntelliQ session cleanup pending for %d session(s): %s", len(result.failed_ids), result.error.message if result.error else "unknown error")
+        elif result.cleaned_ids:
+            logger.info("Deleted %d IntelliQ session(s)", len(result.cleaned_ids))
+        return result
+
+    async def query_sample(
+        self,
+        *,
+        question: str,
+        assistant_id: str,
+        knowledge_base_ids: list[str],
+        knowledge_base_selection_mode: str,
+        on_session_created=None,
+    ) -> RagQueryResult:
         payload: dict[str, Any] = {"query": question, "agent_id": assistant_id, "agent_enabled": True, "channel": "api"}
         if knowledge_base_selection_mode == "selected":
             payload["knowledge_base_ids"] = knowledge_base_ids
 
-        # Create a real session before calling agent-chat (FR-001)
-        real_session_id = await self._create_session()
-        if not real_session_id:
+        creation = await self._create_session()
+        if not creation.created:
             return RagQueryResult(
                 provider="intelliq",
                 session_id="",
-                error=ProviderError("upstream", "Session creation failed: IntelliQ returned no session ID"),
+                error=creation.error,
+                session_creation_status="failed",
             )
+        real_session_id = creation.session_id
         self._session_ids.append(real_session_id)
+        if on_session_created:
+            callback_result = on_session_created(real_session_id)
+            if inspect.isawaitable(callback_result):
+                await callback_result
 
         session = await self._client()
         try:
@@ -267,23 +330,13 @@ class IntelliQProvider(RagProvider):
                 if response.status != 200:
                     text = await response.text()
                     error = self._error(response.status, text[:500] or f"HTTP {response.status}")
-                    return RagQueryResult(provider="intelliq", session_id=real_session_id, error=error)
+                    return RagQueryResult(provider="intelliq", session_id=real_session_id, error=error, session_creation_status="created")
                 if "text/event-stream" not in response.headers.get("Content-Type", ""):
-                    return RagQueryResult(
-                        provider="intelliq",
-                        session_id=real_session_id,
-                        error=ProviderError("protocol", "IntelliQ 未返回 text/event-stream"),
-                    )
-                return await aggregate_intelliq_sse(response.content.iter_any(), real_session_id)
+                    return RagQueryResult(provider="intelliq", session_id=real_session_id, error=ProviderError("protocol", "IntelliQ did not return text/event-stream"), session_creation_status="created")
+                result = await aggregate_intelliq_sse(response.content.iter_any(), real_session_id)
+                result.session_creation_status = "created"
+                return result
         except asyncio.TimeoutError:
-            return RagQueryResult(
-                provider="intelliq",
-                session_id=real_session_id,
-                error=ProviderError("timeout", "IntelliQ 回答超时", True),
-            )
+            return RagQueryResult(provider="intelliq", session_id=real_session_id, error=ProviderError("timeout", "IntelliQ agent chat timed out", True), session_creation_status="created")
         except aiohttp.ClientError as exc:
-            return RagQueryResult(
-                provider="intelliq",
-                session_id=real_session_id,
-                error=ProviderError("upstream", str(exc), True),
-            )
+            return RagQueryResult(provider="intelliq", session_id=real_session_id, error=ProviderError("upstream", str(exc)[:300], True), session_creation_status="created")

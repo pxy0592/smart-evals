@@ -1,142 +1,172 @@
+---
+
+description: "Implementation tasks for durable IntelliQ evaluation session lifecycle"
+---
+
 # Tasks: IntelliQ 评测前自动创建会话
 
-**Feature**: 005-intelliq-session-creation
-**Generated**: 2026-08-22
-**Spec**: [spec.md](./spec.md)
-**Plan**: [plan.md](./plan.md)
+**Input**: Design documents from `/specs/005-intelliq-session-creation/`
 
-## Task Format
+**Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/intelliq-session-api.md`, `quickstart.md`
 
-`[ID] [P?] [US?] Description` — `[P]` = parallelizable, `[US#]` = user story scope
+**Tests**: Tests are required. The feature changes external resource lifecycle behavior and must be verified using a stateful IntelliQ mock before any live smoke test.
 
----
+**Organization**: Tasks are grouped by user story. Shared persistence and provider contracts are completed before session lifecycle stories.
 
-## Phase 1: Setup
+## Phase 1: Setup (Shared Infrastructure)
 
-> ⚠️ Project already initialized; no new dependencies or files needed.
+**Purpose**: Prepare stateful IntelliQ Session test fixtures and configuration needed by all lifecycle work.
 
-- [x] **T001** Verify IntelliQ session API endpoints are accessible from the container: `curl -f http://192.168.88.104:18080/api/v1/sessions` with X-API-Key header
-
----
-
-## Phase 2: Foundational — ABC & Provider Contract Changes
-
-> ⚠️ These changes affect ALL providers. Must be completed before any user story work.
-
-- [x] **T002** [P] Verify `RagQueryResult.session_id` field semantics: field stays but value now comes from provider API response, not caller-supplied UUID. No code change needed to the dataclass itself.
-- [x] **T003** Remove `session_id` parameter from `RagProvider.query_sample()` abstract method signature in `backend/services/rag_providers/base.py` (line ~116)
-- [x] **T004** [P] Add optional `cleanup_sessions()` method to `RagProvider` ABC in `backend/services/rag_providers/base.py` with a default no-op implementation (returns `None`)
-- [x] **T005** [P] Update `RAGFlowProvider.query_sample()` in `backend/services/rag_providers/ragflow.py` — remove `session_id` parameter from signature, keep internal `upstream_session` logic unchanged
-- [x] **T006** [P] Update `RagQueryResult` constructor calls in `backend/services/rag_providers/ragflow.py` — replace `session_id` references with `upstream_session` (the provider-created session ID)
+- [X] T001 [P] Add Session lifecycle configuration defaults and documentation for cleanup batch size and compensation behavior in `backend/config.py` and `.env.example`
+- [X] T002 [P] Extend the stateful IntelliQ mock server skeleton with in-memory Session, deletion-batch, and request-audit stores in `backend/tests/mock_intelliq_server.py`
+- [X] T003 [P] Create reusable Session lifecycle test helpers and isolated task/database fixtures in `backend/tests/conftest.py` and `backend/tests/fixtures/sessions/README.md`
 
 ---
 
-## Phase 3: User Story 1 — 评测任务自动创建会话并成功执行 (P1) 🎯 MVP
+## Phase 2: Foundational (Blocking Prerequisites)
 
-> **Goal**: IntelliQProvider creates a real session via `POST /api/v1/sessions` before calling agent-chat, so evaluation tasks no longer fail with "Session not found".
+**Purpose**: Add durable sample-run Session lifecycle fields and provider-neutral cleanup contracts before implementing either user story.
 
-### IntelliQ Provider Changes
+**CRITICAL**: Complete this phase before User Story 1 or User Story 2 work.
 
-- [x] **T007** [US1] Add `_session_ids: list[str]` instance attribute to `IntelliQProvider.__init__()` in `backend/services/rag_providers/intelliq.py` — tracks created session IDs for later cleanup
-- [x] **T008** [US1] Add `_create_session()` async helper method to `IntelliQProvider` in `backend/services/rag_providers/intelliq.py`:
-  - `POST {api_base}/sessions` with `{"title": "SmartQ Eval - {timestamp}", "description": "Auto-created session for evaluation"}` and `_headers()`
-  - On success (HTTP 200 + `data.id`), return `data.id` as string
-  - On failure, return `None` and log the error
-  - Use existing `_client()` for aiohttp session; use `await response.json(content_type=None)`
-- [x] **T009** [US1] Rewrite `IntelliQProvider.query_sample()` in `backend/services/rag_providers/intelliq.py`:
-  - Remove `session_id` parameter from signature
-  - Call `self._create_session()` before the agent-chat call
-  - If session creation fails, return `RagQueryResult(provider="intelliq", error=...)` with a descriptive `ProviderError("upstream", "Session creation failed: ...")`
-  - On success, append the session ID to `self._session_ids`
-  - Use the IntelliQ-returned session ID (not a caller-supplied UUID) in the agent-chat URL path and in `RagQueryResult.session_id`
-  - Keep the existing SSE processing, error handling, and `aggregate_intelliq_sse()` call unchanged
-- [x] **T010** [US1] Add `cleanup_sessions()` method to `IntelliQProvider` in `backend/services/rag_providers/intelliq.py`:
-  - If `self._session_ids` is empty, return immediately (no-op)
-  - `DELETE {api_base}/sessions/batch` with `{"ids": self._session_ids}` and `_headers()`
-  - On success, clear `self._session_ids` and log info
-  - On failure, log warning (do not raise, do not affect task status — per FR-005)
-  - Clear `self._session_ids` even on failure (best-effort, don't retry forever)
+### Foundational Tests
 
-### Evaluation Service Changes
+- [X] T004 [P] Add failing migration tests for provider Session IDs, creation status, cleanup status, cleanup errors, cleanup attempts, and startup pending-cleanup lookup in `backend/tests/integration/test_database_migrations.py`
+- [X] T005 [P] Add failing provider-base tests for Session cleanup result objects and no-op behavior for non-IntelliQ providers in `backend/tests/unit/test_rag_provider_base.py`
+- [X] T006 [P] Add failing persistence tests for writing the real provider Session ID after creation and querying current-task pending cleanup IDs in `backend/tests/integration/test_intelliq_session_lifecycle.py`
 
-- [x] **T011** [US1] Remove `session_id = str(uuid.uuid4())` generation from `evaluate_with_provider()` loop in `backend/services/evaluation_service.py` (line ~342)
-- [x] **T012** [US1] Remove `session_id=session_id` from `provider.query_sample()` call in `evaluate_with_provider()` in `backend/services/evaluation_service.py` (line ~350)
-- [x] **T013** [US1] Wrap the sample processing loop in `evaluate_with_provider()` with a `try/finally` block that calls `await provider.cleanup_sessions()` in the `finally` clause — ensures cleanup on cancellation (FR-006), error, or success
-  - Use `if hasattr(provider, 'cleanup_sessions'):` guard for provider-agnostic safety
+### Foundational Implementation
 
-### Test Updates
+- [X] T007 Add additive `evaluation_sample_runs` Session lifecycle migration columns, pending-cleanup index, and idempotent defaults in `backend/models/database.py`
+- [X] T008 Implement sample-run updates for provider Session creation, structured creation failures, cleanup state transitions, and pending cleanup queries in `backend/models/database.py` and `backend/db.py`
+- [X] T009 Define provider-neutral `SessionCreationResult` and `SessionCleanupResult` contracts plus no-op defaults in `backend/services/rag_providers/base.py`
+- [X] T010 Add startup recovery that discovers pending IntelliQ cleanup records without changing completed task outcomes in `backend/evaluation_db.py`
+- [X] T011 Run foundational migration, base-contract, and persistence tests in `backend/tests/integration/test_database_migrations.py`, `backend/tests/unit/test_rag_provider_base.py`, and `backend/tests/integration/test_intelliq_session_lifecycle.py`
 
-- [x] **T014** [US1] Update `test_scoring_eligibility.py` mock `Provider.query_sample()` signature — remove `session_id` from `**kwargs` usage; update `RagQueryResult` constructor calls to use a fixed session_id string like `"mock-session"` (providers now set it internally, but the field still exists on the dataclass)
+**Checkpoint**: The application can persist real provider Session IDs and unresolved cleanup work before any IntelliQ network behavior is changed.
 
 ---
 
-## Phase 4: User Story 2 — 会话资源清理 (P2)
+## Phase 3: User Story 1 - IntelliQ 评测任务自动创建会话并成功执行 (Priority: P1) MVP
 
-> **Goal**: After evaluation completes (or is cancelled), all IntelliQ sessions created during the task are batch-deleted.
+**Goal**: Each IntelliQ sample creates a real Session, records the upstream Session ID, uses that ID for Agent Chat, and returns structured diagnostics when creation fails.
 
-- [x] **T015** [US2] Verify `cleanup_sessions()` is called in the `finally` block of `evaluate_with_provider()` — already implemented in T013; this task is to verify end-to-end with a real IntelliQ instance
-- [x] **T016** [US2] Verify that `cleanup_sessions()` is a no-op for RAGFlowProvider (which has no session tracking) — ensure the `hasattr` guard in T013 works correctly
-- [ ] **T017** [US2] Manual E2E test: run a small evaluation (2-3 samples) against IntelliQ, then check the IntelliQ server that no sessions remain via `GET /api/v1/sessions` or IntelliQ UI
+**Independent Test**: A stateful mock rejects Agent Chat for unknown Session IDs, while a two-sample evaluation creates two distinct Sessions, sends each real ID to Chat, and records those IDs in `evaluation_sample_runs`.
+
+### Tests for User Story 1
+
+- [X] T012 [P] [US1] Add unit tests for `POST /sessions` request path, headers, title/description, HTTP 200/201 success, `success=false`, missing `data.id`, non-JSON, 401/403/429/5xx, and timeout mapping in `backend/tests/unit/test_intelliq_resources.py`
+- [X] T013 [P] [US1] Add stateful mock tests that reject unknown Agent Chat Session IDs with code 1003 and accept only Session IDs returned by `POST /sessions` in `backend/tests/mock_intelliq_server.py` and `backend/tests/integration/test_intelliq_session_lifecycle.py`
+- [X] T014 [P] [US1] Add integration tests for two distinct provider Session IDs, selected/all/none Agent modes, creation failure with zero Chat requests, and Session ID persistence in `backend/tests/integration/test_intelliq_session_lifecycle.py`
+
+### Implementation for User Story 1
+
+- [X] T015 [US1] Refactor `_create_session()` to return a structured success or redacted `ProviderError` with HTTP status and upstream error details in `backend/services/rag_providers/intelliq.py`
+- [X] T016 [US1] Update `IntelliQProvider.query_sample()` to record successful real Session IDs, invoke a provider-session-created callback before Agent Chat, refuse Chat after creation failure, and pass the real ID to SSE aggregation in `backend/services/rag_providers/intelliq.py`
+- [X] T017 [US1] Extend the provider `query_sample()` contract and `EvaluationService.evaluate_with_provider()` callbacks so local correlation IDs and real provider Session IDs are persisted separately in `backend/services/rag_providers/base.py` and `backend/services/evaluation_service.py`
+- [X] T018 [US1] Write the real Session creation status, provider Session ID, Agent Chat failure diagnostics, and score eligibility to the sample-run record in `backend/evaluation_db.py` and `backend/db.py`
+- [X] T019 [US1] Verify P1 behavior with the stateful mock and update expected sample-session fields in `backend/tests/unit/test_scoring_eligibility.py` and `backend/tests/integration/test_intelliq_task_flow.py`
+
+**Checkpoint**: IntelliQ samples no longer send caller-generated UUIDs to Agent Chat, and creation failures are visible, safe, and unscoreable.
 
 ---
 
-## Phase 5: Polish & Cross-Cutting
+## Phase 4: User Story 2 - 会话资源清理 (Priority: P2)
 
-- [x] **T018** Run existing unit tests: `cd backend && python -m pytest tests/unit/test_scoring_eligibility.py -v` — confirm all pass after signature changes
-- [x] **T019** Run syntax checks: `bash -n *.sh && docker-compose config` per AGENTS.md
-- [ ] **T020** Run full validation: `./start.sh`, confirm `curl -f http://localhost:5003/health`, test an IntelliQ evaluation task, then `./stop.sh`
-- [ ] **T021** [P] Update `specs/005-intelliq-session-creation/quickstart.md` with any corrections discovered during implementation
+**Goal**: Smart Eval reliably cleans Sessions created by a task, retains unresolved cleanup work, and never changes a completed evaluation outcome solely because cleanup failed.
+
+**Independent Test**: A task with successful, failed, and cancelled samples sends one deduplicated batch delete containing only successfully created real Session IDs; cleanup failure is persisted as a warning and can be recovered later.
+
+### Tests for User Story 2
+
+- [X] T020 [P] [US2] Add provider tests for empty cleanup no-op, stable de-duplication, batch splitting, no redirects, HTTP 2xx plus `success=true` success, and `success=false` failure in `backend/tests/unit/test_intelliq_resources.py`
+- [X] T021 [P] [US2] Add integration tests for Chat SSE failure cleanup, partial-success cleanup failure, all-failed cleanup, and cancellation between samples in `backend/tests/integration/test_intelliq_session_lifecycle.py`
+- [X] T022 [P] [US2] Add startup compensation tests for pending/failed cleanup records and verify RAGFlow never participates in IntelliQ cleanup in `backend/tests/integration/test_intelliq_session_lifecycle.py` and `backend/tests/integration/test_ragflow_legacy_flow.py`
+
+### Implementation for User Story 2
+
+- [X] T023 [US2] Refactor `cleanup_sessions()` to collect only current task real Session IDs, defer in-memory removal until business-success confirmation, disable redirects, split batches by configured size, and return structured cleanup results in `backend/services/rag_providers/intelliq.py`
+- [X] T024 [US2] Update `EvaluationService.evaluate_with_provider()` to call cleanup in all terminal paths, apply cleanup result updates to sample records, and keep completed/partially-succeeded/failed/cancelled outcomes unchanged in `backend/services/evaluation_service.py`
+- [X] T025 [US2] Implement task-end and startup compensation cleanup orchestration, safe warning logging, and report/task warning projection in `backend/evaluation_db.py` and `backend/db.py`
+- [X] T026 [US2] Extend the stateful mock's batch-delete behavior for duplicate IDs, unknown IDs, business failure, HTTP failure, and request auditing in `backend/tests/mock_intelliq_server.py`
+- [X] T027 [US2] Verify cleanup behavior against all automated lifecycle tests and confirm quickstart cancellation/failure expectations in `specs/005-intelliq-session-creation/quickstart.md`
+
+**Checkpoint**: Session cleanup is observable, compensable, and non-destructive to evaluation outcomes.
 
 ---
 
-## Task Summary
+## Phase 5: Polish & Cross-Cutting Validation
 
-| Phase | Tasks | Parallel |
-|-------|-------|----------|
-| Phase 1: Setup | T001 | — |
-| Phase 2: Foundational | T002–T006 | T002, T004, T005, T006 |
-| Phase 3: US1 (P1) MVP | T007–T014 | T007 (independent of T008–T009) |
-| Phase 4: US2 (P2) | T015–T017 | — |
-| Phase 5: Polish | T018–T021 | T021 |
+**Purpose**: Complete operator evidence, controlled real-environment validation, and documentation without leaking IntelliQ credentials.
 
-**Total**: 21 tasks
+- [X] T028 [P] Add secret-redaction regression cases for Session creation and cleanup error payloads in `backend/tests/unit/test_secret_redaction.py`
+- [X] T029 [P] Update test-only IntelliQ mock usage and Session lifecycle troubleshooting guidance in `README.md` and `QUICKSTART.md`
+- [X] T030 Run the complete automated Session lifecycle suite, backend compilation, and RAGFlow regression; record commands and results in `specs/005-intelliq-session-creation/validation-results.md`
+- [X] T031 Perform the controlled IntelliQ smoke test from `specs/005-intelliq-session-creation/quickstart.md` with a disposable tenant, record only non-secret evidence in `specs/005-intelliq-session-creation/validation-results.md`, and explicitly note skipped external checks if credentials are unavailable
 
-## Dependencies
+---
 
-```
-T001 (verify API)
-  │
-  ▼
-T002 ── T003 ── T004 (ABC changes, sequential)
-  │       │
-  ▼       ▼
-T005, T006 (RAGFlow update)
-  │
-  ▼
-T007 ── T008 ── T009 ── T010 (IntelliQ provider, sequential)
-  │
-  ▼
-T011, T012, T013 (eval service, sequential)
-  │
-  ▼
-T014 (test update)
-  │
-  ▼
-T015 ── T016 ── T017 (cleanup verification)
-  │
-  ▼
-T018 ── T019 ── T020 (validation)
-  │
-  ▼
-T021 (doc update)
+## Dependencies & Execution Order
+
+### Phase Dependencies
+
+- **Setup (Phase 1)**: T001-T003 can start immediately.
+- **Foundational (Phase 2)**: T004-T011 block all user stories because provider Session IDs and cleanup states must be durable first.
+- **User Story 1 (Phase 3)**: Depends on T011; delivers the Session creation MVP.
+- **User Story 2 (Phase 4)**: Depends on US1 because cleanup only applies to successfully created provider Sessions.
+- **Polish (Phase 5)**: Depends on both user stories.
+
+### User Story Dependencies
+
+```text
+Foundation
+  -> US1: create and persist real IntelliQ Sessions
+      -> US2: clean up and compensate Session lifecycle work
+          -> Polish: validate and document
 ```
 
-## Unblocks 004 Tasks
+### Parallel Opportunities
 
-Completing US1 (T007–T014) unblocks the following tasks from `specs/004-intelliq-evaluation-tasks/tasks.md`:
-- T012: E2E evaluation with knowledge base selection
-- T013: Progress tracking during evaluation
-- T014: E2E evaluation with all metrics
-- T017: E2E evaluation with scoring configuration
-- T020: E2E test with multiple datasets
-- T026: Full regression validation
+- T001-T003 can run in parallel.
+- T004-T006 can run in parallel before foundational implementation.
+- T012-T014 can run in parallel before User Story 1 implementation.
+- T020-T022 can run in parallel before User Story 2 implementation.
+- T028-T029 can run in parallel after lifecycle behavior is stable.
+
+## Parallel Example: User Story 1
+
+```text
+Task T012: Add Session creation response tests in backend/tests/unit/test_intelliq_resources.py
+Task T013: Add stateful Session/Chat mock tests in backend/tests/mock_intelliq_server.py and backend/tests/integration/test_intelliq_session_lifecycle.py
+Task T014: Add evaluation lifecycle persistence tests in backend/tests/integration/test_intelliq_session_lifecycle.py
+```
+
+## Parallel Example: User Story 2
+
+```text
+Task T020: Add batch cleanup contract tests in backend/tests/unit/test_intelliq_resources.py
+Task T021: Add failure and cancellation cleanup tests in backend/tests/integration/test_intelliq_session_lifecycle.py
+Task T022: Add startup compensation and RAGFlow regression tests in backend/tests/integration/test_intelliq_session_lifecycle.py and backend/tests/integration/test_ragflow_legacy_flow.py
+```
+
+## Implementation Strategy
+
+### MVP First: User Story 1
+
+1. Complete T001-T011.
+2. Complete T012-T019.
+3. Stop and verify stateful mock coverage: create real Session, use returned ID for Chat, persist returned ID, and reject creation failures before Chat.
+
+### Incremental Delivery
+
+1. Durable Session persistence and structured creation errors.
+2. Real Session creation and Agent Chat validation.
+3. Cleanup business-success handling and compensation recovery.
+4. Controlled IntelliQ smoke test and documentation.
+
+## Notes
+
+- All Session IDs in cleanup requests must be real IntelliQ provider IDs, not local correlation IDs.
+- `POST /sessions` remains non-idempotent until IntelliQ documents safe retry semantics.
+- Cleanup failure is a resource-governance warning, not a scoring failure.
+- Do not commit real API Keys, Session IDs, tenant identifiers, or raw upstream error bodies.

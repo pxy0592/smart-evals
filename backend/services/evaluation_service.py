@@ -326,7 +326,9 @@ class EvaluationService:
         dataset_samples: List[Dict],
         progress_callback=None,
         sample_started=None,
+        sample_session_created=None,
         sample_completed=None,
+        session_cleanup_completed=None,
         cancellation_check=None,
     ) -> Dict[str, Any]:
         """Evaluate samples through a task-scoped provider with strict completion gates."""
@@ -336,17 +338,30 @@ class EvaluationService:
         successful_responses = []
         failed_details = []
         total = len(dataset_samples)
+        session_run_ids = {}
+        cleanup_result = None
         try:
             for index, sample in enumerate(dataset_samples):
                 if cancellation_check and cancellation_check():
                     raise asyncio.CancelledError("Evaluation task cancelled")
                 correlation_id = str(uuid.uuid4())
                 run_id = sample_started(index, correlation_id, sample) if sample_started else None
+                async def on_session_created(provider_session_id, current_run_id=run_id):
+                    if cancellation_check and cancellation_check():
+                        raise asyncio.CancelledError("Evaluation task cancelled after Session creation")
+                    if current_run_id is not None:
+                        session_run_ids[provider_session_id] = current_run_id
+                        if sample_session_created:
+                            callback_result = sample_session_created(current_run_id, provider_session_id)
+                            if asyncio.iscoroutine(callback_result):
+                                await callback_result
+
                 result = await provider.query_sample(
                     question=str(sample.get("question") or sample.get("user_input") or ""),
                     assistant_id=assistant_id,
                     knowledge_base_ids=knowledge_base_ids,
                     knowledge_base_selection_mode=knowledge_base_selection_mode,
+                    on_session_created=on_session_created,
                 )
                 result_dict = result.to_dict()
                 if sample_completed:
@@ -388,8 +403,12 @@ class EvaluationService:
                 if progress_callback:
                     progress_callback(int((index + 1) / max(total, 1) * 50))
         finally:
-            if hasattr(provider, 'cleanup_sessions'):
-                await provider.cleanup_sessions()
+            if hasattr(provider, "cleanup_sessions"):
+                cleanup_result = await provider.cleanup_sessions()
+                if session_cleanup_completed:
+                    callback_result = session_cleanup_completed(cleanup_result, session_run_ids)
+                    if asyncio.iscoroutine(callback_result):
+                        await callback_result
 
         if not successful_samples:
             raise RuntimeError("没有任何样本获得完整可评分回答")

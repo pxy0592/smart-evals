@@ -57,6 +57,9 @@ class Config:
         for host in os.getenv("RAG_PROVIDER_ALLOWED_HOSTS", "").split(",")
         if host.strip()
     }
+    INTELLIQ_SESSION_CLEANUP_BATCH_SIZE = int(
+        os.getenv("INTELLIQ_SESSION_CLEANUP_BATCH_SIZE", 100)
+    )
 
     @staticmethod
     def init_app(app):

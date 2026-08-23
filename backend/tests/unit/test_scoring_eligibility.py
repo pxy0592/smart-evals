@@ -26,7 +26,14 @@ async def test_evaluation_service_generates_unique_sample_sessions(monkeypatch):
         def __init__(self): self.sessions=[]
         async def query_sample(self, **kwargs):
             self.sessions.append("mock-session")
-            return RagQueryResult(provider="intelliq",session_id="mock-session",completed=True,score_eligible=True,answer="a")
+            callback = kwargs.get("on_session_created")
+            if callback:
+                await callback("provider-session-1")
+            return RagQueryResult(provider="intelliq",session_id="provider-session-1",completed=True,score_eligible=True,answer="a",session_creation_status="created")
+
+        async def cleanup_sessions(self):
+            from services.rag_providers.base import SessionCleanupResult
+            return SessionCleanupResult(cleaned_ids=["provider-session-1"])
 
     monkeypatch.setattr(module, "SingleTurnSample", Sample)
     monkeypatch.setattr(module, "EvaluationDataset", Dataset)
@@ -41,8 +48,16 @@ async def test_evaluation_service_generates_unique_sample_sessions(monkeypatch):
     def sample_started(index, session_id, sample):
         sample_sessions.append(session_id)
         return index
-    result=await service.evaluate_with_provider(provider=provider,assistant_id="a",knowledge_base_ids=[],knowledge_base_selection_mode="none",dataset_id="d",selected_metrics=["metric"],dataset_samples=[{"question":"q1"},{"question":"q2"}],sample_started=sample_started)
+    created_sessions=[]
+    cleanup_calls=[]
+    def sample_session_created(run_id, session_id):
+        created_sessions.append((run_id, session_id))
+    def cleanup_completed(result, session_run_ids):
+        cleanup_calls.append((result.cleaned_ids, session_run_ids))
+    result=await service.evaluate_with_provider(provider=provider,assistant_id="a",knowledge_base_ids=[],knowledge_base_selection_mode="none",dataset_id="d",selected_metrics=["metric"],dataset_samples=[{"question":"q1"},{"question":"q2"}],sample_started=sample_started,sample_session_created=sample_session_created,session_cleanup_completed=cleanup_completed)
     assert len(provider.sessions) == 2
     assert all(sample_sessions)
     assert len(set(sample_sessions)) == 2
+    assert created_sessions == [(0, "provider-session-1"), (1, "provider-session-1")]
+    assert cleanup_calls[0][0] == ["provider-session-1"]
     assert result["evaluation_metadata"]["success_count"] == 2

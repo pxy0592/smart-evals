@@ -164,6 +164,11 @@ class DatabaseManager:
                 sample_index INTEGER NOT NULL,
                 attempt INTEGER NOT NULL DEFAULT 1,
                 session_id TEXT NOT NULL,
+                provider_session_id TEXT,
+                session_creation_status TEXT NOT NULL DEFAULT 'pending',
+                session_cleanup_status TEXT NOT NULL DEFAULT 'not_required',
+                session_cleanup_error TEXT,
+                session_cleanup_attempts INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 question TEXT NOT NULL,
                 answer TEXT,
@@ -215,11 +220,19 @@ class DatabaseManager:
             "success_rate": "REAL NOT NULL DEFAULT 0",
             "warning": "TEXT",
         })
+        self._ensure_columns(cursor, "evaluation_sample_runs", {
+            "provider_session_id": "TEXT",
+            "session_creation_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "session_cleanup_status": "TEXT NOT NULL DEFAULT 'not_required'",
+            "session_cleanup_error": "TEXT",
+            "session_cleanup_attempts": "INTEGER NOT NULL DEFAULT 0",
+        })
         cursor.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_rag_connections_provider ON rag_connections(provider, enabled);
             CREATE INDEX IF NOT EXISTS idx_tasks_provider_status ON evaluation_tasks(rag_provider, status);
             CREATE INDEX IF NOT EXISTS idx_sample_runs_task ON evaluation_sample_runs(task_id, sample_index, attempt);
+            CREATE INDEX IF NOT EXISTS idx_sample_runs_pending_cleanup ON evaluation_sample_runs(session_cleanup_status, provider_session_id);
             INSERT OR IGNORE INTO schema_migrations(version, name) VALUES (1, 'rag_provider_foundation');
             """
         )
@@ -374,17 +387,121 @@ class DatabaseManager:
 
     # Sample execution
     def create_sample_run(self, data: Dict[str, Any]) -> int:
-        conn = self.get_connection(); cursor = conn.execute("INSERT INTO evaluation_sample_runs(task_id,sample_index,attempt,session_id,status,question,started_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)", (data["task_id"], data["sample_index"], data.get("attempt", 1), data["session_id"], data.get("status", "running"), data.get("question", ""))); conn.commit(); run_id = cursor.lastrowid; conn.close(); return run_id
+        conn = self.get_connection()
+        cursor = conn.execute(
+            """INSERT INTO evaluation_sample_runs
+            (task_id,sample_index,attempt,session_id,status,question,session_creation_status,session_cleanup_status,started_at)
+            VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            (
+                data["task_id"], data["sample_index"], data.get("attempt", 1),
+                data["session_id"], data.get("status", "running"),
+                data.get("question", ""), "pending", "not_required",
+            ),
+        )
+        conn.commit(); run_id = cursor.lastrowid; conn.close(); return run_id
+
+    def mark_sample_session_created(self, run_id: int, provider_session_id: str) -> None:
+        conn = self.get_connection()
+        conn.execute(
+            """UPDATE evaluation_sample_runs
+            SET provider_session_id=?, session_creation_status='created', session_cleanup_status='pending'
+            WHERE id=?""",
+            (provider_session_id, run_id),
+        )
+        conn.commit(); conn.close()
+
+    def mark_sample_session_creation_failed(self, run_id: int, error: Dict[str, Any]) -> None:
+        conn = self.get_connection()
+        conn.execute(
+            """UPDATE evaluation_sample_runs
+            SET session_creation_status='failed', session_cleanup_status='not_required',
+                error_category=?, error_message=? WHERE id=?""",
+            (error.get("category"), error.get("message"), run_id),
+        )
+        conn.commit(); conn.close()
 
     def complete_sample_run(self, run_id: int, result: Dict[str, Any]) -> None:
-        error = result.get("error") or {}; conn = self.get_connection(); conn.execute("""UPDATE evaluation_sample_runs SET status=?,answer=?,partial_answer=?,contexts=?,references_json=?,intermediate_event_summary=?,completed_signal_received=?,score_eligible=?,error_category=?,error_message=?,completed_at=CURRENT_TIMESTAMP WHERE id=?""", ("completed" if result.get("score_eligible") else "failed", result.get("answer"), result.get("partial_answer"), json.dumps(result.get("contexts", [])), json.dumps(result.get("references", [])), json.dumps(result.get("intermediate_event_summary", {})), bool(result.get("completed")), bool(result.get("score_eligible")), error.get("category"), error.get("message"), run_id)); conn.commit(); conn.close()
+        error = result.get("error") or {}
+        provider_session_id = result.get("session_id") or None
+        creation_status = result.get("session_creation_status") or ("created" if provider_session_id else "failed")
+        cleanup_status = "pending" if creation_status == "created" else "not_required"
+        conn = self.get_connection()
+        conn.execute(
+            """UPDATE evaluation_sample_runs SET
+            status=?, provider_session_id=COALESCE(?, provider_session_id),
+            session_creation_status=?, session_cleanup_status=CASE
+                WHEN session_cleanup_status='cleaned' THEN 'cleaned' ELSE ? END,
+            answer=?, partial_answer=?, contexts=?, references_json=?, intermediate_event_summary=?,
+            completed_signal_received=?, score_eligible=?, error_category=?, error_message=?, completed_at=CURRENT_TIMESTAMP
+            WHERE id=?""",
+            (
+                "completed" if result.get("score_eligible") else "failed",
+                provider_session_id, creation_status, cleanup_status,
+                result.get("answer"), result.get("partial_answer"),
+                json.dumps(result.get("contexts", [])), json.dumps(result.get("references", [])),
+                json.dumps(result.get("intermediate_event_summary", {})), bool(result.get("completed")),
+                bool(result.get("score_eligible")), error.get("category"), error.get("message"), run_id,
+            ),
+        )
+        conn.commit(); conn.close()
 
     def get_final_sample_runs(self, task_id: str) -> List[Dict[str, Any]]:
-        conn = self.get_connection(); rows = conn.execute("""SELECT r.* FROM evaluation_sample_runs r JOIN (SELECT sample_index,MAX(attempt) attempt FROM evaluation_sample_runs WHERE task_id=? GROUP BY sample_index) x ON x.sample_index=r.sample_index AND x.attempt=r.attempt WHERE r.task_id=? ORDER BY r.sample_index""", (task_id, task_id)).fetchall(); conn.close()
-        result = []
-        for row in rows:
-            item = dict(row); item["contexts"] = json.loads(item.get("contexts") or "[]"); item["references"] = json.loads(item.pop("references_json") or "[]"); item["intermediate_event_summary"] = json.loads(item.get("intermediate_event_summary") or "{}"); result.append(item)
-        return result
+        conn = self.get_connection()
+        rows = conn.execute(
+            """SELECT r.* FROM evaluation_sample_runs r JOIN (
+                SELECT sample_index,MAX(attempt) attempt
+                FROM evaluation_sample_runs WHERE task_id=? GROUP BY sample_index
+            ) x ON x.sample_index=r.sample_index AND x.attempt=r.attempt
+            WHERE r.task_id=? ORDER BY r.sample_index""",
+            (task_id, task_id),
+        ).fetchall()
+        conn.close()
+        return [self._decode_sample_run(dict(row)) for row in rows]
+
+    @staticmethod
+    def _decode_sample_run(item: Dict[str, Any]) -> Dict[str, Any]:
+        item["contexts"] = json.loads(item.get("contexts") or "[]")
+        item["references"] = json.loads(item.pop("references_json") or "[]")
+        item["intermediate_event_summary"] = json.loads(item.get("intermediate_event_summary") or "{}")
+        return item
+
+    def get_pending_session_cleanup_groups(self) -> List[Dict[str, Any]]:
+        conn = self.get_connection()
+        rows = conn.execute(
+            """SELECT t.rag_connection_id, GROUP_CONCAT(DISTINCT r.provider_session_id) AS session_ids
+            FROM evaluation_sample_runs r
+            JOIN evaluation_tasks t ON t.id=r.task_id
+            WHERE t.rag_provider='intelliq'
+              AND r.session_creation_status='created'
+              AND r.session_cleanup_status IN ('pending','failed')
+              AND r.provider_session_id IS NOT NULL
+            GROUP BY t.rag_connection_id"""
+        ).fetchall()
+        conn.close()
+        return [
+            {"rag_connection_id": row["rag_connection_id"], "session_ids": row["session_ids"].split(",")}
+            for row in rows if row["rag_connection_id"] and row["session_ids"]
+        ]
+
+    def mark_session_cleanup_result(self, session_ids: List[str], cleaned_ids: List[str], failed_ids: List[str], error: Dict[str, Any] | None = None) -> None:
+        if not session_ids:
+            return
+        conn = self.get_connection()
+        for session_id in cleaned_ids:
+            conn.execute(
+                """UPDATE evaluation_sample_runs SET session_cleanup_status='cleaned',
+                session_cleanup_error=NULL, session_cleanup_attempts=session_cleanup_attempts+1
+                WHERE provider_session_id=?""", (session_id,)
+            )
+        failure_set = set(failed_ids) or (set(session_ids) - set(cleaned_ids))
+        for session_id in failure_set:
+            conn.execute(
+                """UPDATE evaluation_sample_runs SET session_cleanup_status='failed',
+                session_cleanup_error=?, session_cleanup_attempts=session_cleanup_attempts+1
+                WHERE provider_session_id=?""",
+                ((error or {}).get("message", "Session cleanup failed"), session_id),
+            )
+        conn.commit(); conn.close()
 
     def _generate_report_file(self, data: Dict[str, Any]) -> str:
         reports_dir = Path(os.getenv("REPORTS_DIR", "tmp/evaluation/reports")); reports_dir.mkdir(parents=True, exist_ok=True)

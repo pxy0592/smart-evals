@@ -37,4 +37,30 @@ async def test_create_session_accepts_http_201(monkeypatch):
         return Client()
 
     monkeypatch.setattr(provider,"_client",client)
-    assert await provider._create_session() == "session-1"
+    result = await provider._create_session()
+    assert result.created
+    assert result.session_id == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_business_success(monkeypatch):
+    provider = IntelliQProvider(base_url="https://example.com/api/v1", api_key="secret", connection_id="c")
+
+    class Response:
+        status = 200
+        async def json(self, content_type=None):
+            return {"success": False, "error": {"code": 1003, "message": "Session not found"}}
+        async def __aenter__(self): return self
+        async def __aexit__(self, exc_type, exc, traceback): return False
+
+    class Client:
+        def post(self, *args, **kwargs):
+            assert kwargs["allow_redirects"] is False
+            return Response()
+
+    async def client(): return Client()
+    monkeypatch.setattr(provider, "_client", client)
+    result = await provider._create_session()
+    assert not result.created
+    assert result.error.http_status == 200
+    assert "Session not found" in result.error.message

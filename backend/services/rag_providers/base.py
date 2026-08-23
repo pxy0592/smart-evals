@@ -61,6 +61,27 @@ class ProviderError:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SessionCreationResult:
+    session_id: str | None = None
+    error: ProviderError | None = None
+
+    @property
+    def created(self) -> bool:
+        return bool(self.session_id) and self.error is None
+
+
+@dataclass
+class SessionCleanupResult:
+    cleaned_ids: list[str] = field(default_factory=list)
+    failed_ids: list[str] = field(default_factory=list)
+    error: ProviderError | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return not self.failed_ids and self.error is None
+
+
 @dataclass
 class RagQueryResult:
     provider: str
@@ -73,6 +94,7 @@ class RagQueryResult:
     references: list[dict[str, Any]] = field(default_factory=list)
     intermediate_event_summary: dict[str, int] = field(default_factory=dict)
     error: ProviderError | None = None
+    session_creation_status: str = "not_required"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +108,7 @@ class RagQueryResult:
             "references": self.references,
             "intermediate_event_summary": self.intermediate_event_summary,
             "error": self.error.to_dict() if self.error else None,
+            "session_creation_status": self.session_creation_status,
         }
 
 
@@ -103,13 +126,17 @@ class RagProvider(ABC):
     async def close(self) -> None:
         return None
 
-    async def cleanup_sessions(self) -> None:
+    async def cleanup_sessions(self) -> SessionCleanupResult:
         """Optional: clean up provider-side resources created during evaluation.
 
         Default is a no-op. Providers that create server-side sessions
         (e.g. IntelliQ) should override this to batch-delete them.
         """
-        return None
+        return SessionCleanupResult()
+
+    async def cleanup_session_ids(self, session_ids: list[str]) -> SessionCleanupResult:
+        """Best-effort cleanup of previously created provider sessions."""
+        return SessionCleanupResult()
 
     @abstractmethod
     async def validate_connection(self) -> dict[str, Any]: ...
@@ -128,6 +155,7 @@ class RagProvider(ABC):
         assistant_id: str,
         knowledge_base_ids: list[str],
         knowledge_base_selection_mode: str,
+        on_session_created=None,
     ) -> RagQueryResult: ...
 
     @abstractmethod

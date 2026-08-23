@@ -1,135 +1,119 @@
 # IntelliQ Session API Contract
 
-**Feature**: 005-intelliq-session-creation
-**Date**: 2026-08-22
+**Feature**: `005-intelliq-session-creation`
 
-These are the external IntelliQ API contracts used by the provider. All endpoints are relative to the IntelliQ base URL (e.g., `http://192.168.88.104:18080/api/v1`).
+**Date**: 2026-08-23
 
-## POST /sessions — Create Session
+All paths are relative to the configured IntelliQ API base. Every request uses the same connection credential and MUST NOT follow redirects.
 
-Creates a new conversation session for agent-chat.
+## POST /sessions - Create Session
 
 ### Request
 
-```
+```http
 POST /api/v1/sessions
 Content-Type: application/json
-X-API-Key: <api_key>
+Accept: application/json
+X-API-Key: <IntelliQ API Key>
 ```
 
 ```json
 {
-    "title": "SmartQ Eval - 2026-08-22T21:17:59",
-    "description": "Auto-created session for evaluation"
+  "title": "SmartQ Eval - <task-id> - <sample-index> - <attempt>",
+  "description": "Auto-created session for evaluation"
 }
 ```
 
-### Response (200 OK)
+### Success Contract
 
-```json
-{
-    "success": true,
-    "data": {
-        "id": "b6660558-3493-4cbd-ab46-f4579b63e77c",
-        "title": "SmartQ Eval - 2026-08-22T21:17:59",
-        "description": "Auto-created session for evaluation",
-        "tenant_id": 10001,
-        "user_id": "df6269ab-42f6-4523-b412-676adedc34d9",
-        "is_pinned": false,
-        "created_at": "2026-08-22T21:17:59.145803518+08:00",
-        "updated_at": "2026-08-22T21:17:59.145803612+08:00",
-        "deleted_at": null
-    }
-}
-```
+A creation is successful only when all conditions hold:
 
-### Error Response
+1. HTTP status is in the 2xx range.
+2. Response body is valid JSON.
+3. `success` is `true`.
+4. `data.id` is a non-empty string.
 
-```json
-{
-    "success": false,
-    "error": {
-        "code": "<error_code>",
-        "message": "<error_message>",
-        "details": "<error_details>"
-    }
-}
-```
+The returned `data.id` is the only valid value for the following Agent Chat URL. Its format is opaque and must not be assumed to be a UUID.
 
-## DELETE /sessions/batch — Batch Delete Sessions
+### Failure Contract
 
-Deletes multiple sessions by ID.
+The following are session creation failures:
+
+- Any non-2xx HTTP response.
+- A 2xx response with `success=false`.
+- A non-JSON response.
+- Missing or empty `data.id`.
+- Network error or timeout.
+
+Smart Eval records a structured, redacted error with HTTP status, upstream code if present, a bounded message/details summary, and retryability. It MUST NOT send Agent Chat when creation fails.
+
+`POST /sessions` is treated as non-idempotent. Smart Eval does not blindly retry it until IntelliQ documents a safe idempotency or recovery contract.
+
+## POST /agent-chat/{session_id} - Agent Chat
+
+### Preconditions
+
+- `{session_id}` comes from a successful `POST /sessions` under the same IntelliQ connection credential.
+- `selected` knowledge-base mode sends the selected `knowledge_base_ids`.
+- `all` and `none` modes omit explicit knowledge-base IDs.
 
 ### Request
 
-```
-DELETE /api/v1/sessions/batch
-Content-Type: application/json
-X-API-Key: <api_key>
-```
-
-```json
-{
-    "ids": [
-        "b6660558-3493-4cbd-ab46-f4579b63e77c",
-        "ceb9babb-1e30-41d7-817d-fd584954304b"
-    ]
-}
-```
-
-### Response (200 OK)
-
-```json
-{
-    "success": true,
-    "message": "Sessions deleted successfully"
-}
-```
-
-## POST /agent-chat/:session_id — Agent Chat (existing, unchanged)
-
-### Request
-
-```
+```http
 POST /api/v1/agent-chat/{session_id}
 Content-Type: application/json
-X-API-Key: <api_key>
 Accept: text/event-stream
+X-API-Key: <IntelliQ API Key>
+```
+
+### Completion Contract
+
+- SSE output must include a complete final answer and the defined completion signal before the sample is scoreable.
+- Session creation failure, non-SSE response, stream interruption, error events, or missing completion signal produce an unscoreable sample result.
+- A Session created before a failed Agent Chat still enters task-level cleanup.
+
+## DELETE /sessions/batch - Batch Delete Sessions
+
+### Request
+
+```http
+DELETE /api/v1/sessions/batch
+Content-Type: application/json
+Accept: application/json
+X-API-Key: <IntelliQ API Key>
 ```
 
 ```json
 {
-    "query": "用户问题",
-    "agent_id": "<agent-uuid>",
-    "agent_enabled": true,
-    "knowledge_base_ids": ["<kb-uuid>"],
-    "channel": "api"
+  "ids": ["<provider-session-id-1>", "<provider-session-id-2>"]
 }
 ```
 
-### Response (200 OK, SSE stream)
+### Preconditions
 
-```
-Content-Type: text/event-stream
+- The list contains only real IntelliQ Session IDs successfully created by the current evaluation task.
+- IDs are de-duplicated locally.
+- An empty list does not call IntelliQ.
 
-event: message
-data: {"id":"...","response_type":"references","content":"","done":false,"knowledge_references":[...]}
+### Success Contract
 
-event: message
-data: {"id":"...","response_type":"answer","content":"回答内容...","done":false,"knowledge_references":null}
+Cleanup is successful only when HTTP status is 2xx and the JSON response declares `success=true`.
 
-event: message
-data: {"id":"...","response_type":"answer","content":"","done":true,"knowledge_references":null}
-```
+### Failure Contract
 
-### Error (non-SSE)
+- Cleanup failure is recorded as a safe task-level warning and per-session cleanup failure state.
+- Cleanup failure MUST NOT alter a completed, partially succeeded, failed, or cancelled evaluation outcome.
+- Failed IDs remain eligible for a later compensation attempt.
+- Batch size, unknown-ID, partial-success, rate-limit, and retry behavior require controlled real-environment verification before enabling automatic retry.
 
-```json
-{
-    "success": false,
-    "error": {
-        "code": 1003,
-        "message": "Session not found"
-    }
-}
-```
+## External Verification Boundary
+
+The following behavior must be validated in a disposable IntelliQ tenant or approved test environment:
+
+- Exact 2xx statuses returned by create and delete.
+- Whether additional tenant headers are required.
+- Maximum `ids` per batch delete.
+- Duplicate, missing, or already-deleted ID semantics.
+- Partial deletion response shape.
+- 429 / 5xx and `Retry-After` behavior.
+- Whether IntelliQ exposes a safe Agent Chat cancellation endpoint.

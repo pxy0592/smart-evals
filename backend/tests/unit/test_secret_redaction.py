@@ -26,3 +26,11 @@ def test_provider_result_never_contains_headers_or_secret():
     ).to_dict()
     serialized = redact_secret(json.dumps(result), ["top-secret"])
     assert "top-secret" not in serialized
+
+
+def test_session_lifecycle_error_summary_redacts_credentials():
+    from services.rag_providers.base import ProviderError, SessionCleanupResult
+    error = ProviderError("session_cleanup", "cleanup failed for Bearer top-secret", False, 500)
+    result = SessionCleanupResult(failed_ids=["session-test"], error=error)
+    serialized = redact_secret(json.dumps({"error": result.error.to_dict()}), ["top-secret"])
+    assert "top-secret" not in serialized
