@@ -75,14 +75,14 @@ interface EvaluationTask {
     score?: number;
     errorMessage?: string;
     source_snapshot?: {
-        provider: string;
-        connection_id: string;
-        connection_revision: number;
+        provider: 'ragflow' | 'intelliq';
+        connection_id?: string | null;
+        connection_revision?: number | null;
         connection_name: string;
-        connection_base_url: string;
+        connection_base_url?: string | null;
         assistant_id: string;
         assistant_name: string;
-        knowledge_base_selection_mode: string;
+        knowledge_base_selection_mode?: 'all' | 'selected' | 'none' | null;
         knowledge_bases: Array<{ id: string; name: string }>;
         legacy: boolean;
     };

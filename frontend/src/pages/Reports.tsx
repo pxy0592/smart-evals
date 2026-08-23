@@ -858,7 +858,10 @@ const Reports: React.FC = () => {
                                                         }}
                                                     >
                                                         {record.contexts.map(
-                                                            (context, idx) => (
+                                                            (
+                                                                context: string,
+                                                                idx: number,
+                                                            ) => (
                                                                 <Tag
                                                                     key={idx}
                                                                     style={{

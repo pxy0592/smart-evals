@@ -32,6 +32,16 @@ export interface EvaluationTask {
     dataset_name?: string;
     rag_provider?: RagProvider;
     rag_connection_id?: string;
+    source_snapshot?: {
+        provider: RagProvider;
+        connection_id?: string | null;
+        connection_name: string;
+        assistant_id: string;
+        assistant_name: string;
+        knowledge_base_selection_mode?: KnowledgeBaseSelectionMode | null;
+        knowledge_bases: Array<{ id: string; name: string }>;
+        legacy: boolean;
+    };
     dataset_id: string;
     metrics: string[];
     llm_model?: string;
