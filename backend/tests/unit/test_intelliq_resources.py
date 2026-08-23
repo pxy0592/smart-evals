@@ -64,3 +64,52 @@ async def test_create_session_requires_business_success(monkeypatch):
     assert not result.created
     assert result.error.http_status == 200
     assert "Session not found" in result.error.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "configured_ids", "expected_ids"),
+    [
+        ("none", [], []),
+        ("selected", ["kb-2"], ["kb-2"]),
+        ("all", [], ["kb-1", "kb-2"]),
+    ],
+)
+async def test_assistant_scoped_kbs_filter_tenant_accessible_list(
+    monkeypatch, mode, configured_ids, expected_ids
+):
+    provider = IntelliQProvider(
+        base_url="https://example.com/api/v1", api_key="secret", connection_id="c"
+    )
+    calls = []
+
+    async def fake(path, params=None):
+        calls.append((path, params))
+        if path == "/agents/agent-1":
+            return {
+                "success": True,
+                "data": {
+                    "id": "agent-1",
+                    "tenant_id": 10001,
+                    "config": {
+                        "kb_selection_mode": mode,
+                        "knowledge_bases": configured_ids,
+                    },
+                },
+            }
+        if path == "/knowledge-bases":
+            return {
+                "success": True,
+                "data": [
+                    {"id": "kb-1", "name": "Tenant KB 1"},
+                    {"id": "kb-2", "name": "Tenant KB 2"},
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(provider, "_get_json", fake)
+
+    resources = await provider.list_knowledge_bases(assistant_id="agent-1", limit=100)
+
+    assert [resource.id for resource in resources] == expected_ids
+    assert calls == [("/agents/agent-1", None), ("/knowledge-bases", None)]
