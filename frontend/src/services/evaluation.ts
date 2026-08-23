@@ -458,17 +458,12 @@ export const systemApi = {
     },
 
     // 测试API连接
-    testConnection: (config: {
-        provider: string;
-        apiKey: string;
-        endpoint?: string;
-        model: string;
-    }) => {
+    testConnection: () => {
         return request.post<{
             success: boolean;
             message: string;
             details?: any;
-        }>('/evaluation/test-connection', config);
+        }>('/evaluation/test-connection', {});
     },
 };
 

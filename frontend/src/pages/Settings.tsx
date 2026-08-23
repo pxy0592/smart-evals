@@ -114,7 +114,7 @@ const Settings: React.FC = () => {
 
                 const apiConfigForForm = {
                     ...config.api,
-                    apiKey: '',
+                    apiKey: config.api.apiKey || '',
                     model: config.api.model ? [config.api.model] : ['gpt-4'],
                     embeddingModel: config.api.embeddingModel
                         ? [config.api.embeddingModel]
@@ -200,29 +200,7 @@ const Settings: React.FC = () => {
     const handleTestConnection = async () => {
         setTestingConnection(true);
         try {
-            // 获取当前表单的值
-            const values = apiForm.getFieldsValue();
-
-            const modelValue = normalizeTagField(values.model, 'gpt-4');
-
-            console.log('Testing connection with config:', {
-                provider: values.provider,
-                apiKey: values.apiKey
-                    ? values.apiKey.substring(0, 10) + '...'
-                    : values.apiKeyConfigured
-                      ? '已保存的密钥'
-                      : '未配置',
-                endpoint: values.endpoint,
-                model: modelValue,
-            });
-
-            // 调用测试连接API
-            const result = await systemApi.testConnection({
-                provider: values.provider || 'openai',
-                apiKey: normalizeTagField(values.apiKey),
-                endpoint: values.endpoint,
-                model: modelValue || 'gpt-4',
-            });
+            const result = await systemApi.testConnection();
 
             if (result.success) {
                 modal.success({
@@ -545,11 +523,11 @@ const Settings: React.FC = () => {
                             </Row>
 
                             <Form.Item
-                                        label={
-                                            apiConfig.apiKeyConfigured
-                                                ? '替换 API 密钥（留空保持不变）'
-                                                : 'API 密钥'
-                                        }
+                                label={
+                                    apiConfig.apiKeyConfigured
+                                        ? '替换 API 密钥（留空保持不变）'
+                                        : 'API 密钥'
+                                }
                                 name="apiKey"
                                 rules={[
                                     {
@@ -557,6 +535,16 @@ const Settings: React.FC = () => {
                                         message: '请输入 API 密钥',
                                     },
                                 ]}
+                                extra={
+                                    apiConfig.apiKeyConfigured
+                                        ? (
+                                              <span>
+                                                  当前保存值：<Text code>{apiConfig.apiKey}</Text>
+                                                  。出于安全原因，系统不会回显原始密钥；测试连接会使用数据库中的已保存配置。
+                                              </span>
+                                          )
+                                        : undefined
+                                }
                             >
                                 <Input.Password
                                     prefix={<KeyOutlined />}
@@ -649,7 +637,7 @@ const Settings: React.FC = () => {
                                     onClick={handleTestConnection}
                                     loading={testingConnection}
                                 >
-                                    测试连接
+                                    测试已保存配置
                                 </Button>
                             </Form.Item>
                         </Form>

@@ -59,7 +59,7 @@ def test_config_rejects_multiple_tag_values_before_sqlite(secure_env):
     assert "at most one value" in response.get_json()["error"]
 
 
-def test_config_hides_stored_api_key_but_reports_it_is_configured(secure_env):
+def test_config_masks_stored_api_key_but_reports_it_is_configured(secure_env):
     client = make_client(secure_env)
     client.put(
         "/api/v1/evaluation/config",
@@ -68,6 +68,8 @@ def test_config_hides_stored_api_key_but_reports_it_is_configured(secure_env):
                 "provider": "custom",
                 "apiKey": "persisted-secret",
                 "model": "gpt-test",
+                "embeddingModel": "BAAI/bge-m3",
+                "maxTokens": 4096,
             }
         },
     )
@@ -75,8 +77,12 @@ def test_config_hides_stored_api_key_but_reports_it_is_configured(secure_env):
     response = client.get("/api/v1/evaluation/config")
     assert response.status_code == 200
     api = response.get_json()["api"]
-    assert api["apiKey"] == ""
+    assert api["apiKey"]
+    assert "*" in api["apiKey"]
+    assert "persisted-secret" not in api["apiKey"]
     assert api["apiKeyConfigured"] is True
+    assert api["embeddingModel"] == "BAAI/bge-m3"
+    assert api["maxTokens"] == 4096
 
 
 def test_connection_test_uses_stored_key_when_request_key_is_omitted(
@@ -111,8 +117,15 @@ def test_connection_test_uses_stored_key_when_request_key_is_omitted(
     monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChatOpenAI)
     response = client.post(
         "/api/v1/evaluation/test-connection",
-        json={"provider": "custom", "model": "gpt-test"},
+        json={
+            "provider": "untrusted-provider",
+            "apiKey": "untrusted-key",
+            "endpoint": "http://untrusted.test/v1",
+            "model": "untrusted-model",
+        },
     )
     assert response.status_code == 200
     assert response.get_json()["details"]["usingStoredApiKey"] is True
+    assert response.get_json()["details"]["usingStoredConfig"] is True
     assert calls[0]["api_key"] == "persisted-secret"
+    assert calls[0]["model"] == "gpt-test"

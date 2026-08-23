@@ -165,20 +165,31 @@ def get_config():
                 return
             else:
                 stored_api_key = config.get("api_key") or config.get("apiKey")
+                masked_api_key = (
+                    config_manager._mask(stored_api_key)
+                    if stored_api_key
+                    else ""
+                )
                 return {
                     "id": config.get("id"),
                     "name": config.get("name"),
                     "provider": config.get("provider"),
-                    "apiKey": "",
+                    "apiKey": masked_api_key,
                     "apiKeyConfigured": bool(stored_api_key),
                     "endpoint": config.get("endpoint"),
                     "model": config.get("model"),
-                    "embeddingModel": config.get("embedding_model"),
+                    "embeddingModel": config.get("embedding_model")
+                    or config.get("embeddingModel"),
                     "temperature": config.get("temperature"),
-                    "maxTokens": config.get("max_tokens"),
-                    "isDefault": config.get("is_default"),
-                    "createdAt": config.get("created_at"),
-                    "updatedAt": config.get("updated_at"),
+                    "maxTokens": config.get("max_tokens")
+                    or config.get("maxTokens"),
+                    "isDefault": config.get("is_default")
+                    if "is_default" in config
+                    else config.get("isDefault"),
+                    "createdAt": config.get("created_at")
+                    or config.get("createdAt"),
+                    "updatedAt": config.get("updated_at")
+                    or config.get("updatedAt"),
                 }
 
         api_configs_camel = [to_camel_case(c) for c in api_configs]
@@ -1748,30 +1759,34 @@ def delete_tasks_batch():
 @evaluation_bp.route("/test-connection", methods=["POST"])
 @cross_origin()
 def test_api_connection():
-    """测试 OpenAI 兼容 API 的连通性。"""
+    """测试数据库中已保存的 OpenAI 兼容 API 配置。"""
     try:
         init_services()
-        data = request.get_json(silent=True) or {}
-        provider = data.get("provider", "openai")
-        api_key = data.get("apiKey") or data.get("api_key")
-        endpoint = data.get("endpoint")
-        model = data.get("model", "gpt-4")
-        using_stored_api_key = False
-        if not api_key or "*" in api_key:
-            default_config = config_manager.get_default_api_config()
-            stored_key = default_config.get("apiKey") if default_config else None
-            if not stored_key:
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "message": "无法获取完整的 API Key，请重新输入",
-                        }
-                    ),
-                    400,
-                )
-            api_key = stored_key
-            using_stored_api_key = True
+        default_config = config_manager.get_default_api_config()
+        if not default_config:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "尚未保存 API 配置，请先保存后再测试",
+                    }
+                ),
+                400,
+            )
+        provider = default_config.get("provider", "openai")
+        api_key = default_config.get("apiKey") or default_config.get("api_key")
+        endpoint = default_config.get("endpoint")
+        model = default_config.get("model", "gpt-4")
+        if not api_key:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "message": "数据库中未保存 API 密钥，请保存后再测试",
+                    }
+                ),
+                400,
+            )
 
         provider_endpoints = {
             "siliconflow": "https://api.siliconflow.cn/v1",
@@ -1795,7 +1810,8 @@ def test_api_connection():
                     "provider": provider,
                     "model": model,
                     "response": str(response.content)[:200],
-                    "usingStoredApiKey": using_stored_api_key,
+                    "usingStoredApiKey": True,
+                    "usingStoredConfig": True,
                 },
             }
         )
