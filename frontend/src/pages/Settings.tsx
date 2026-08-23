@@ -39,12 +39,47 @@ const { TabPane } = Tabs;
 interface APIConfig {
     provider: string;
     apiKey: string;
+    apiKeyConfigured?: boolean;
     endpoint?: string;
     model: string;
     embeddingModel?: string;
     temperature: number;
     maxTokens: number;
 }
+
+type TagFieldValue = string | string[] | undefined;
+
+const normalizeTagField = (
+    value: TagFieldValue,
+    fallback = '',
+): string => {
+    const candidate = Array.isArray(value) ? value[0] : value;
+    return typeof candidate === 'string' && candidate.trim()
+        ? candidate.trim()
+        : fallback;
+};
+
+const normalizeApiConfigForSubmit = (values: Record<string, any>) => {
+    const apiKey = normalizeTagField(values.apiKey);
+    const config: Record<string, any> = {
+        ...values,
+        model: normalizeTagField(values.model, 'gpt-4'),
+        embeddingModel: normalizeTagField(values.embeddingModel),
+    };
+    delete config.apiKeyConfigured;
+
+    if (!apiKey || apiKey.includes('*')) {
+        delete config.apiKey;
+    } else {
+        config.apiKey = apiKey;
+    }
+
+    if (!config.embeddingModel) {
+        delete config.embeddingModel;
+    }
+
+    return config;
+};
 
 const Settings: React.FC = () => {
     const { modal } = App.useApp();
@@ -77,14 +112,16 @@ const Settings: React.FC = () => {
             if (config.api) {
                 setApiConfig(config.api);
 
-                // 处理 model 字段：转换为数组以适配 Select mode="tags"
                 const apiConfigForForm = {
                     ...config.api,
+                    apiKey: '',
                     model: config.api.model ? [config.api.model] : ['gpt-4'],
+                    embeddingModel: config.api.embeddingModel
+                        ? [config.api.embeddingModel]
+                        : [],
                 };
 
                 apiForm.setFieldsValue(apiConfigForForm);
-                console.log('Set API form values:', apiConfigForForm);
             }
         } catch (error) {
             console.error('Failed to fetch config:', error);
@@ -96,30 +133,11 @@ const Settings: React.FC = () => {
     const handleSaveSettings = async (values: any) => {
         setSaving(true);
         try {
-            // 包装配置数据，区分是哪个表单提交的
-            let configData;
+            const configData =
+                'provider' in values
+                    ? { api_config: normalizeApiConfigForSubmit(values) }
+                    : values;
 
-            // 如果有 provider 字段，说明是 API 配置表单
-            if ('provider' in values) {
-                // 处理 model 字段：如果是数组（tags mode），取第一个值
-                let modelValue = values.model;
-                if (Array.isArray(modelValue)) {
-                    modelValue = modelValue[0] || 'gpt-4';
-                }
-
-                configData = {
-                    api_config: {
-                        ...values,
-                        model: modelValue,
-                    },
-                };
-            }
-            // 否则是常规设置表单
-            else {
-                configData = values;
-            }
-
-            console.log('Saving config:', configData);
             await systemApi.updateConfig(configData);
             message.success('配置保存成功');
             await fetchConfig();
@@ -155,18 +173,8 @@ const Settings: React.FC = () => {
         setIsAutoSaving(true);
         try {
             const values = apiForm.getFieldsValue();
-
-            // 处理 model 字段
-            let modelValue = values.model;
-            if (Array.isArray(modelValue)) {
-                modelValue = modelValue[0] || 'gpt-4';
-            }
-
             const configData = {
-                api_config: {
-                    ...values,
-                    model: modelValue,
-                },
+                api_config: normalizeApiConfigForSubmit(values),
             };
 
             await systemApi.updateConfig(configData);
@@ -183,8 +191,8 @@ const Settings: React.FC = () => {
     // 任意字段失去焦点时自动保存
     const handleFieldBlur = () => {
         const values = apiForm.getFieldsValue();
-        // 至少要有 API Key 才保存
-        if (values.apiKey && values.apiKey.trim()) {
+        // 已配置的密钥可以留空；配置字段变更仍应安全自动保存。
+        if (values.provider && normalizeTagField(values.model)) {
             autoSaveApiKey();
         }
     };
@@ -195,21 +203,15 @@ const Settings: React.FC = () => {
             // 获取当前表单的值
             const values = apiForm.getFieldsValue();
 
-            if (!values.apiKey) {
-                message.warning('请先输入 API Key');
-                setTestingConnection(false);
-                return;
-            }
-
-            // 处理 model 字段：如果是数组（tags mode），取第一个值
-            let modelValue = values.model;
-            if (Array.isArray(modelValue)) {
-                modelValue = modelValue[0] || 'gpt-4';
-            }
+            const modelValue = normalizeTagField(values.model, 'gpt-4');
 
             console.log('Testing connection with config:', {
                 provider: values.provider,
-                apiKey: values.apiKey?.substring(0, 10) + '...',
+                apiKey: values.apiKey
+                    ? values.apiKey.substring(0, 10) + '...'
+                    : values.apiKeyConfigured
+                      ? '已保存的密钥'
+                      : '未配置',
                 endpoint: values.endpoint,
                 model: modelValue,
             });
@@ -217,7 +219,7 @@ const Settings: React.FC = () => {
             // 调用测试连接API
             const result = await systemApi.testConnection({
                 provider: values.provider || 'openai',
-                apiKey: values.apiKey,
+                apiKey: normalizeTagField(values.apiKey),
                 endpoint: values.endpoint,
                 model: modelValue || 'gpt-4',
             });
@@ -543,13 +545,26 @@ const Settings: React.FC = () => {
                             </Row>
 
                             <Form.Item
-                                label="API 密钥"
+                                        label={
+                                            apiConfig.apiKeyConfigured
+                                                ? '替换 API 密钥（留空保持不变）'
+                                                : 'API 密钥'
+                                        }
                                 name="apiKey"
-                                rules={[{ required: true }]}
+                                rules={[
+                                    {
+                                        required: !apiConfig.apiKeyConfigured,
+                                        message: '请输入 API 密钥',
+                                    },
+                                ]}
                             >
                                 <Input.Password
-                                    placeholder="输入您的 API 密钥"
                                     prefix={<KeyOutlined />}
+                                    placeholder={
+                                        apiConfig.apiKeyConfigured
+                                            ? '已保存，留空保持不变'
+                                            : '输入您的 API 密钥'
+                                    }
                                     onBlur={handleFieldBlur}
                                     onChange={() => setIsSaved(false)}
                                 />

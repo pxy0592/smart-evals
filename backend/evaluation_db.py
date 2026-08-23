@@ -158,22 +158,19 @@ def get_config():
                 }
             )
         api_configs = config_manager.get_api_configs()
-        default_api = None
-        if api_configs:
-            default_api = next(
-                (config for config in api_configs if config.get("is_default")),
-                api_configs[0],
-            )
+        default_api = config_manager.get_default_api_config()
 
         def to_camel_case(config):
             if not config:
                 return
             else:
+                stored_api_key = config.get("api_key") or config.get("apiKey")
                 return {
                     "id": config.get("id"),
                     "name": config.get("name"),
                     "provider": config.get("provider"),
-                    "apiKey": config.get("api_key"),
+                    "apiKey": "",
+                    "apiKeyConfigured": bool(stored_api_key),
                     "endpoint": config.get("endpoint"),
                     "model": config.get("model"),
                     "embeddingModel": config.get("embedding_model"),
@@ -204,7 +201,9 @@ def update_config():
     """更新系统配置"""
     try:
         init_services()
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Configuration payload must be an object"}), 400
         if "settings" in data:
             config_manager.update_settings_batch(data["settings"])
         if "api_config" in data:
@@ -217,6 +216,26 @@ def update_config():
             normalized_config = {}
             for key, value in api_config.items():
                 db_key = field_mapping.get(key, key)
+                if db_key in {"model", "embedding_model"} and isinstance(
+                    value, list
+                ):
+                    if len(value) > 1:
+                        return (
+                            jsonify(
+                                {
+                                    "error": f"{key} must contain at most one value"
+                                }
+                            ),
+                            400,
+                        )
+                    value = value[0] if value else None
+                if isinstance(value, (dict, list)):
+                    return (
+                        jsonify(
+                            {"error": f"{key} must be a scalar configuration value"}
+                        ),
+                        400,
+                    )
                 normalized_config[db_key] = value
             default_config = config_manager.get_default_api_config()
             if default_config:
@@ -1737,10 +1756,8 @@ def test_api_connection():
         api_key = data.get("apiKey") or data.get("api_key")
         endpoint = data.get("endpoint")
         model = data.get("model", "gpt-4")
-        if not api_key:
-            return jsonify({"success": False, "message": "API Key 不能为空"}), 400
-
-        if "*" in api_key:
+        using_stored_api_key = False
+        if not api_key or "*" in api_key:
             default_config = config_manager.get_default_api_config()
             stored_key = default_config.get("apiKey") if default_config else None
             if not stored_key:
@@ -1754,6 +1771,7 @@ def test_api_connection():
                     400,
                 )
             api_key = stored_key
+            using_stored_api_key = True
 
         provider_endpoints = {
             "siliconflow": "https://api.siliconflow.cn/v1",
@@ -1777,6 +1795,7 @@ def test_api_connection():
                     "provider": provider,
                     "model": model,
                     "response": str(response.content)[:200],
+                    "usingStoredApiKey": using_stored_api_key,
                 },
             }
         )
