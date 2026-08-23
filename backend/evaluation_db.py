@@ -749,26 +749,51 @@ def create_evaluation_task():
         if not connection or not connection.get("enabled"):
             return jsonify({"error": {"category": "validation", "message": "RAG connection 不存在或未启用", "retryable": False}}), 400
         provider = create_provider(connection, connection.get("api_key"))
-        try:
-            assistants = _run_async(provider.list_assistants(limit=100))
-            assistant = next((item for item in assistants if item.id == target.get("assistant_id")), None)
+
+        async def validate_intelliq_target(active_provider):
+            assistants = await active_provider.list_assistants(limit=100)
+            assistant = next(
+                (item for item in assistants if item.id == target.get("assistant_id")),
+                None,
+            )
             if not assistant or not assistant.selectable or not assistant.knowledge_base_selection_mode:
-                return jsonify({"error": {"category": "validation", "message": "Agent 不可用或知识库模式未知，请刷新资源", "retryable": False}}), 400
+                return {"error": ("validation", "Agent 不可用或知识库模式未知，请刷新资源", False, 400)}
             mode = assistant.knowledge_base_selection_mode
             kb_ids = [str(x) for x in target.get("knowledge_base_ids") or []]
             if mode == "selected" and not kb_ids:
-                return jsonify({"error": {"category": "validation", "message": "selected 模式至少需要一个知识库", "retryable": False}}), 400
+                return {"error": ("validation", "selected 模式至少需要一个知识库", False, 400)}
             if mode in {"all", "none"} and kb_ids:
-                return jsonify({"error": {"category": "validation", "message": f"{mode} 模式不能手动提交知识库", "retryable": False}}), 400
+                return {"error": ("validation", f"{mode} 模式不能手动提交知识库", False, 400)}
             kb_names = []
             if kb_ids:
-                resources = _run_async(provider.list_knowledge_bases(assistant_id=assistant.id, limit=100))
+                resources = await active_provider.list_knowledge_bases(
+                    assistant_id=assistant.id, limit=100
+                )
                 mapping = {item.id: item for item in resources if item.selectable}
                 if any(kb_id not in mapping for kb_id in kb_ids):
-                    return jsonify({"error": {"category": "validation", "message": "知识库不属于当前连接或 Agent 无权访问", "retryable": False}}), 400
+                    return {"error": ("validation", "知识库不属于当前连接或 Agent 无权访问", False, 400)}
                 kb_names = [mapping[kb_id].name for kb_id in kb_ids]
-        finally:
-            _run_async(provider.close())
+            return {"assistant": assistant, "mode": mode, "kb_ids": kb_ids, "kb_names": kb_names}
+
+        try:
+            validation = _run_provider_scope(provider, validate_intelliq_target)
+        except Exception as exc:
+            return _task_creation_provider_error(exc, connection_id, target)
+        if validation.get("error"):
+            category, message, retryable, status = validation["error"]
+            logger.warning(
+                "Task creation validation failed connection_id=%s assistant_id=%s kb_ids=%s category=%s",
+                connection_id,
+                target.get("assistant_id"),
+                target.get("knowledge_base_ids") or [],
+                category,
+            )
+            return jsonify({"error": {"category": category, "message": message, "retryable": retryable}}), status
+
+        assistant = validation["assistant"]
+        mode = validation["mode"]
+        kb_ids = validation["kb_ids"]
+        kb_names = validation["kb_names"]
         provider_name = connection["provider"]
         assistant_id = assistant.id
         task_source = {
@@ -1125,23 +1150,68 @@ def _recover_pending_session_cleanups():
             continue
         provider = create_provider(connection, connection.get("api_key"))
         try:
-            result = _run_async(provider.cleanup_session_ids(group["session_ids"]))
+            result = _run_provider_scope(
+                provider, lambda active_provider: active_provider.cleanup_session_ids(group["session_ids"])
+            )
             task_manager.db.mark_session_cleanup_result(
                 group["session_ids"], result.cleaned_ids, result.failed_ids,
                 result.error.to_dict() if result.error else None,
             )
         except Exception as exc:
             logger.warning("Pending IntelliQ Session cleanup failed: %s", str(exc)[:300])
-        finally:
-            _run_async(provider.close())
 
 
 def _run_async(coro):
     loop = asyncio.new_event_loop()
     try:
+        asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
     finally:
+        asyncio.set_event_loop(None)
         loop.close()
+
+
+def _run_provider_scope(provider, operation):
+    """Run one provider operation and close its resources before closing the loop."""
+    async def scoped_operation():
+        try:
+            return await operation(provider)
+        finally:
+            await provider.close()
+
+    return _run_async(scoped_operation())
+
+
+def _run_connection_provider_operation(connection_id: str, operation):
+    """Create a provider scope for one request and return its connection with the result."""
+    connection, provider = _connection_provider(connection_id)
+    result = _run_provider_scope(
+        provider, lambda active_provider: operation(connection, active_provider)
+    )
+    return connection, result
+
+
+def _task_creation_provider_error(error, connection_id: str, target: dict):
+    raw_message = str(error)
+    lower_message = raw_message.lower()
+    if lower_message.startswith("permission:"):
+        category, message, retryable, status = "permission", "IntelliQ 拒绝访问任务创建所需资源，请检查权限", False, 403
+    elif lower_message.startswith("authentication:"):
+        category, message, retryable, status = "authentication", "IntelliQ 凭证无效或已失效", False, 401
+    elif lower_message.startswith("validation:"):
+        category, message, retryable, status = "validation", raw_message.split(":", 1)[-1].strip(), False, 400
+    elif lower_message.startswith(("timeout:", "upstream:")):
+        category, message, retryable, status = "upstream", "IntelliQ 服务暂时不可用，请稍后重试", True, 502
+    else:
+        category, message, retryable, status = "internal", "创建评测任务时初始化资源失败，请重试", False, 500
+    logger.exception(
+        "Task creation provider operation failed connection_id=%s assistant_id=%s kb_ids=%s category=%s",
+        connection_id,
+        target.get("assistant_id"),
+        target.get("knowledge_base_ids") or [],
+        category,
+    )
+    return jsonify({"error": {"category": category, "message": message, "retryable": retryable}}), status
 
 
 def _connection_provider(connection_id: str):
@@ -1213,11 +1283,15 @@ def test_rag_connection(connection_id):
 @cross_origin()
 def list_connection_knowledge_bases(connection_id):
     try:
-        connection, provider = _connection_provider(connection_id)
-        try:
-            items = _run_async(provider.list_knowledge_bases(search=request.args.get("search"), assistant_id=request.args.get("assistant_id"), offset=int(request.args.get("offset", 0)), limit=min(int(request.args.get("limit", 100)), 100)))
-        finally:
-            _run_async(provider.close())
+        connection, items = _run_connection_provider_operation(
+            connection_id,
+            lambda _connection, provider: provider.list_knowledge_bases(
+                search=request.args.get("search"),
+                assistant_id=request.args.get("assistant_id"),
+                offset=int(request.args.get("offset", 0)),
+                limit=min(int(request.args.get("limit", 100)), 100),
+            ),
+        )
         return jsonify({"provider": connection["provider"], "connection_id": connection_id, "items": [item.to_dict() for item in items], "total": len(items), "offset": int(request.args.get("offset", 0)), "limit": min(int(request.args.get("limit", 100)), 100)})
     except KeyError:
         return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
@@ -1229,11 +1303,14 @@ def list_connection_knowledge_bases(connection_id):
 @cross_origin()
 def list_connection_assistants(connection_id):
     try:
-        connection, provider = _connection_provider(connection_id)
-        try:
-            items = _run_async(provider.list_assistants(search=request.args.get("search"), offset=int(request.args.get("offset", 0)), limit=min(int(request.args.get("limit", 100)), 100)))
-        finally:
-            _run_async(provider.close())
+        connection, items = _run_connection_provider_operation(
+            connection_id,
+            lambda _connection, provider: provider.list_assistants(
+                search=request.args.get("search"),
+                offset=int(request.args.get("offset", 0)),
+                limit=min(int(request.args.get("limit", 100)), 100),
+            ),
+        )
         return jsonify({"provider": connection["provider"], "connection_id": connection_id, "items": [item.to_dict() for item in items], "total": len(items), "offset": int(request.args.get("offset", 0)), "limit": min(int(request.args.get("limit", 100)), 100)})
     except KeyError:
         return jsonify({"error": {"category": "not_found", "message": "RAG connection not found", "retryable": False}}), 404
