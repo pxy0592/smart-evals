@@ -16,6 +16,7 @@ import {
     Tabs,
     Descriptions,
     List,
+    Pagination,
     Empty,
     Statistic,
     Spin,
@@ -47,6 +48,7 @@ import {
 } from '../services/evaluation';
 import type {
     Dataset as ApiDataset,
+    DatasetSample,
     RagConnectionSummary,
     RagResourceRef,
 } from '../services/evaluation';
@@ -58,12 +60,7 @@ import { EvaluationTaskForm } from '../components/EvaluationTaskForm';
 const { Title, Text, Paragraph } = Typography;
 const { Search } = Input;
 const { Dragger } = Upload;
-
-interface DatasetSample {
-    question: string;
-    expected_answer?: string;
-    contexts?: string[];
-}
+const SAMPLE_PAGE_SIZE = 5;
 
 const Datasets: React.FC = () => {
     const [datasets, setDatasets] = useState<ApiDataset[]>([]);
@@ -78,6 +75,10 @@ const Datasets: React.FC = () => {
     );
     const [datasetSamples, setDatasetSamples] = useState<DatasetSample[]>([]);
     const [samplesLoading, setSamplesLoading] = useState(false);
+    const [samplesError, setSamplesError] = useState<string | null>(null);
+    const [samplePage, setSamplePage] = useState(1);
+    const [sampleTotal, setSampleTotal] = useState(0);
+    const [sampleOffset, setSampleOffset] = useState(0);
     const [searchText, setSearchText] = useState('');
     // AI generation session state (on-demand)
     const [genConnections, setGenConnections] = useState<RagConnectionSummary[]>([]);
@@ -87,6 +88,7 @@ const Datasets: React.FC = () => {
     const [genKbs, setGenKbs] = useState<RagResourceRef[]>([]);
     const [genKbLoading, setGenKbLoading] = useState(false);
     const genAbortRef = useRef<AbortController | null>(null);
+    const sampleRequestIdRef = useRef(0);
     const [form] = Form.useForm();
     const [generateForm] = Form.useForm();
     const [createTaskForm] = Form.useForm();
@@ -261,20 +263,73 @@ const Datasets: React.FC = () => {
         },
     ];
 
-    const handlePreview = async (dataset: ApiDataset) => {
-        setSelectedDataset(dataset);
-        setPreviewVisible(true);
+    const loadDatasetSamples = async (dataset: ApiDataset, page: number) => {
+        const requestId = sampleRequestIdRef.current + 1;
+        const offset = (page - 1) * SAMPLE_PAGE_SIZE;
+        sampleRequestIdRef.current = requestId;
         setSamplesLoading(true);
+        setSamplesError(null);
+        setDatasetSamples([]);
+
         try {
             const response = await datasetApi.getSamples(dataset.id, {
-                limit: 10,
+                offset,
+                limit: SAMPLE_PAGE_SIZE,
             });
+            if (requestId !== sampleRequestIdRef.current) {
+                return;
+            }
+
+            const total = response.total;
+            if (total > 0 && offset >= total && page !== 1) {
+                setSamplePage(1);
+                void loadDatasetSamples(dataset, 1);
+                return;
+            }
+
             setDatasetSamples(response.samples || []);
+            setSampleTotal(total);
+            setSampleOffset(total === 0 ? 0 : response.offset);
+            setSamplePage(total === 0 ? 1 : page);
         } catch (error) {
+            if (requestId !== sampleRequestIdRef.current) {
+                return;
+            }
             console.error('Failed to fetch dataset samples:', error);
-            message.error('获取数据集样本失败');
+            setDatasetSamples([]);
+            setSamplesError('加载样本数据失败，请重试');
         } finally {
-            setSamplesLoading(false);
+            if (requestId === sampleRequestIdRef.current) {
+                setSamplesLoading(false);
+            }
+        }
+    };
+
+    const handlePreview = (dataset: ApiDataset) => {
+        setSelectedDataset(dataset);
+        setPreviewVisible(true);
+        setDatasetSamples([]);
+        setSamplesError(null);
+        setSamplePage(1);
+        setSampleTotal(0);
+        setSampleOffset(0);
+        void loadDatasetSamples(dataset, 1);
+    };
+
+    const handlePreviewClose = () => {
+        sampleRequestIdRef.current += 1;
+        setPreviewVisible(false);
+        setDatasetSamples([]);
+        setSamplesError(null);
+        setSamplesLoading(false);
+        setSamplePage(1);
+        setSampleTotal(0);
+        setSampleOffset(0);
+    };
+
+    const handleSamplePageChange = (page: number) => {
+        if (selectedDataset) {
+            void loadDatasetSamples(selectedDataset, page);
         }
     };
 
@@ -771,12 +826,12 @@ const Datasets: React.FC = () => {
             <Modal
                 title={`预览数据集：${selectedDataset?.name}`}
                 open={previewVisible}
-                onCancel={() => setPreviewVisible(false)}
+                onCancel={handlePreviewClose}
                 width={900}
                 footer={[
                     <Button
                         key="close"
-                        onClick={() => setPreviewVisible(false)}
+                        onClick={handlePreviewClose}
                     >
                         关闭
                     </Button>,
@@ -817,7 +872,28 @@ const Datasets: React.FC = () => {
                             </Descriptions>
                         </Tabs.TabPane>
                         <Tabs.TabPane tab="数据样例" key="samples">
-                            {samplesLoading ? (
+                            {samplesError ? (
+                                <Alert
+                                    type="error"
+                                    showIcon
+                                    message={samplesError}
+                                    action={
+                                        <Button
+                                            size="small"
+                                            onClick={() => {
+                                                if (selectedDataset) {
+                                                    void loadDatasetSamples(
+                                                        selectedDataset,
+                                                        samplePage,
+                                                    );
+                                                }
+                                            }}
+                                        >
+                                            重试
+                                        </Button>
+                                    }
+                                />
+                            ) : samplesLoading ? (
                                 <div
                                     style={{
                                         textAlign: 'center',
@@ -827,64 +903,90 @@ const Datasets: React.FC = () => {
                                     <Spin tip="加载样本数据中..." />
                                 </div>
                             ) : (
-                                <List
-                                    dataSource={datasetSamples}
-                                    locale={{ emptyText: '暂无样本数据' }}
-                                    renderItem={(item, index) => (
-                                        <List.Item>
-                                            <List.Item.Meta
-                                                title={
-                                                    <Text strong>
-                                                        样本 {index + 1}：
-                                                    </Text>
-                                                }
-                                                description={
-                                                    <Space
-                                                        direction="vertical"
-                                                        style={{
-                                                            width: '100%',
-                                                        }}
-                                                    >
-                                                        <div>
-                                                            <Text type="secondary">
-                                                                问题：
-                                                            </Text>
-                                                            <Text>
-                                                                {item.question}
-                                                            </Text>
-                                                        </div>
-                                                        {item.expected_answer && (
+                                <>
+                                    <List
+                                        dataSource={datasetSamples}
+                                        locale={{ emptyText: '暂无样本数据' }}
+                                        renderItem={(item, index) => (
+                                            <List.Item>
+                                                <List.Item.Meta
+                                                    title={
+                                                        <Text strong>
+                                                            样本 {sampleOffset + index + 1}：
+                                                        </Text>
+                                                    }
+                                                    description={
+                                                        <Space
+                                                            direction="vertical"
+                                                            style={{
+                                                                width: '100%',
+                                                            }}
+                                                        >
                                                             <div>
                                                                 <Text type="secondary">
-                                                                    参考答案：
+                                                                    问题：
                                                                 </Text>
                                                                 <Text>
-                                                                    {
-                                                                        item.expected_answer
-                                                                    }
+                                                                    {item.question}
                                                                 </Text>
                                                             </div>
-                                                        )}
-                                                        {item.contexts &&
-                                                            item.contexts
-                                                                .length > 0 && (
+                                                            {item.expected_answer && (
                                                                 <div>
                                                                     <Text type="secondary">
-                                                                        上下文：
+                                                                        参考答案：
                                                                     </Text>
                                                                     <Text>
-                                                                        {item.contexts.join(
-                                                                            ', ',
-                                                                        )}
+                                                                        {item.expected_answer}
                                                                     </Text>
                                                                 </div>
                                                             )}
-                                                    </Space>
+                                                            {item.contexts &&
+                                                                item.contexts
+                                                                    .length > 0 && (
+                                                                    <div>
+                                                                        <Text type="secondary">
+                                                                            上下文：
+                                                                        </Text>
+                                                                        <Text>
+                                                                            {item.contexts.join(
+                                                                                ', ',
+                                                                            )}
+                                                                        </Text>
+                                                                    </div>
+                                                                )}
+                                                        </Space>
+                                                    }
+                                                />
+                                            </List.Item>
+                                        )}
+                                    />
+                                    {sampleTotal > 0 && (
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center',
+                                                marginTop: 16,
+                                            }}
+                                        >
+                                            <Text type="secondary">
+                                                当前第 {samplePage} 页，共{' '}
+                                                {sampleTotal} 条样本
+                                            </Text>
+                                            <Pagination
+                                                current={samplePage}
+                                                pageSize={SAMPLE_PAGE_SIZE}
+                                                total={sampleTotal}
+                                                showSizeChanger={false}
+                                                hideOnSinglePage
+                                                showTotal={(total, range) =>
+                                                    `第 ${range[0]}-${range[1]} 条，共 ${total} 条`
                                                 }
+                                                onChange={handleSamplePageChange}
                                             />
-                                        </List.Item>
+                                        </div>
                                     )}
-                                />
+                                </>
                             )}
                         </Tabs.TabPane>
                     </Tabs>

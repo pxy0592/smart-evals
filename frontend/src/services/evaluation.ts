@@ -68,6 +68,13 @@ export interface DatasetSample {
     [key: string]: unknown;
 }
 
+export interface DatasetSamplePage {
+    samples: DatasetSample[];
+    total: number;
+    offset: number;
+    limit: number;
+}
+
 export interface TaskCreateParams {
     name?: string;
     chat_id?: string; // legacy RAGFlow compatibility
@@ -218,11 +225,10 @@ export const datasetApi = {
         datasetId: string,
         params?: { offset?: number; limit?: number },
     ) => {
-        return request.get<{
-            samples: any[];
-            offset: number;
-            limit: number;
-        }>(`/evaluation/datasets/${datasetId}/samples`, { params });
+        return request.get<DatasetSamplePage>(
+            `/evaluation/datasets/${datasetId}/samples`,
+            { params },
+        );
     },
 
     // 删除数据集

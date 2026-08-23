@@ -42,3 +42,6 @@ __pycache__/
 coverage/
 backend/tests/
 backend/requirements-dev.txt
+
+# Editor swap files
+*.swp
