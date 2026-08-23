@@ -40,3 +40,45 @@ async def test_split_utf8_and_missing_done_fail():
 async def test_error_event_fails():
     result = await aggregate_intelliq_sse(chunks(b'data: {"response_type":"error","content":"bad","done":false}\n\n'), "s3")
     assert result.error.category == "upstream"
+
+
+@pytest.mark.asyncio
+async def test_recoverable_tool_errors_continue_to_final_answer():
+    stream = chunks(
+        b'data: {"response_type":"error","content":"bad arguments","done":false,"data":{"tool_call_id":"call-1","tool_name":"list_knowledge_chunks"}}\n\n',
+        b'data: {"response_type":"error","content":"bad arguments","done":false,"data":{"tool_call_id":"call-1","tool_name":"list_knowledge_chunks"}}\n\n',
+        b'data: {"response_type":"error","content":"knowledge not found","done":false,"data":{"tool_call_id":"call-2","tool_name":"list_knowledge_chunks"}}\n\n',
+        'data: {"response_type":"answer","content":"最终答案","done":false}\n\n'.encode(),
+        b'data: {"response_type":"complete","content":"","done":true}\n\n',
+    )
+
+    result = await aggregate_intelliq_sse(stream, "s4")
+
+    assert result.completed and result.score_eligible
+    assert result.answer == "最终答案"
+    assert result.error is None
+    assert len(result.tool_errors) == 2
+    assert all(item["recovered"] for item in result.tool_errors)
+    assert result.tool_errors[0]["event_count"] == 2
+    assert "arguments" not in result.tool_errors[0]
+
+
+@pytest.mark.asyncio
+async def test_terminal_tool_error_and_empty_complete_still_fail():
+    terminal = await aggregate_intelliq_sse(
+        chunks(
+            b'data: {"response_type":"error","content":"terminal","done":true,"data":{"tool_call_id":"call-1","tool_name":"tool"}}\n\n'
+        ),
+        "s5",
+    )
+    empty = await aggregate_intelliq_sse(
+        chunks(
+            b'data: {"response_type":"error","content":"recoverable","done":false,"data":{"tool_call_id":"call-1","tool_name":"tool"}}\n\n',
+            b'data: {"response_type":"complete","content":"","done":true}\n\n',
+        ),
+        "s6",
+    )
+
+    assert not terminal.completed and terminal.error.category == "upstream"
+    assert not empty.completed and empty.error.category == "protocol"
+    assert empty.tool_errors[0]["recovered"] is False

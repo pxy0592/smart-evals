@@ -382,6 +382,7 @@ class EvaluationService:
                         "expected_answer": reference or "",
                         "contexts": result.contexts,
                         "references": result.references,
+                        "tool_errors": result.tool_errors,
                         "session_id": result.session_id,
                         "completion_status": "completed",
                     })
@@ -394,6 +395,7 @@ class EvaluationService:
                         "expected_answer": sample.get("expected_answer") or sample.get("reference") or "",
                         "contexts": result.contexts,
                         "references": result.references,
+                        "tool_errors": result.tool_errors,
                         "completion_status": "failed",
                         "score_eligible": False,
                         "session_id": result.session_id,
@@ -432,6 +434,7 @@ class EvaluationService:
         for index, detail in enumerate(processed.get("detailed_scores", [])):
             detail.setdefault("sample_index", index)
             detail.setdefault("references", successful_responses[index].get("references", []))
+            detail.setdefault("tool_errors", successful_responses[index].get("tool_errors", []))
             detail.setdefault("completion_status", "completed")
             detail.setdefault("score_eligible", True)
             detail.setdefault("session_id", successful_responses[index].get("session_id"))

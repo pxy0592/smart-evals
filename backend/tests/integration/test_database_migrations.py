@@ -22,6 +22,7 @@ def test_database_path_wal_and_idempotent_schema(secure_env):
         "session_cleanup_status",
         "session_cleanup_error",
         "session_cleanup_attempts",
+        "tool_errors",
     } <= sample_columns
     conn.close()
 
@@ -35,3 +36,35 @@ def test_pending_cleanup_group_and_state_updates(secure_env):
     assert db.get_pending_session_cleanup_groups() == [{"rag_connection_id": "conn", "session_ids": ["provider-session"]}]
     db.mark_session_cleanup_result(["provider-session"], ["provider-session"], [])
     assert db.get_pending_session_cleanup_groups() == []
+
+
+def test_sample_run_tool_errors_are_persisted_and_decoded(secure_env):
+    db = DatabaseManager(str(secure_env / "evaluation.db"))
+    db.create_dataset({"id": "d-tool", "name": "D", "status": "completed"})
+    db.create_evaluation_task(
+        {"id": "t-tool", "chat_id": "a", "dataset_id": "d-tool", "metrics": []}
+    )
+    run_id = db.create_sample_run(
+        {"task_id": "t-tool", "sample_index": 0, "session_id": "s", "question": "q"}
+    )
+    db.complete_sample_run(
+        run_id,
+        {
+            "session_id": "provider-s",
+            "completed": True,
+            "score_eligible": True,
+            "answer": "answer",
+            "tool_errors": [
+                {
+                    "tool_call_id": "call-1",
+                    "tool_name": "list_knowledge_chunks",
+                    "message": "knowledge not found",
+                    "recovered": True,
+                    "event_count": 1,
+                }
+            ],
+        },
+    )
+
+    run = db.get_final_sample_runs("t-tool")[0]
+    assert run["tool_errors"][0]["recovered"] is True

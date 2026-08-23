@@ -176,6 +176,7 @@ class DatabaseManager:
                 contexts TEXT NOT NULL DEFAULT '[]',
                 references_json TEXT NOT NULL DEFAULT '[]',
                 intermediate_event_summary TEXT NOT NULL DEFAULT '{}',
+                tool_errors TEXT NOT NULL DEFAULT '[]',
                 completed_signal_received BOOLEAN NOT NULL DEFAULT 0,
                 score_eligible BOOLEAN NOT NULL DEFAULT 0,
                 error_category TEXT,
@@ -226,6 +227,7 @@ class DatabaseManager:
             "session_cleanup_status": "TEXT NOT NULL DEFAULT 'not_required'",
             "session_cleanup_error": "TEXT",
             "session_cleanup_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "tool_errors": "TEXT NOT NULL DEFAULT '[]'",
         })
         cursor.executescript(
             """
@@ -431,7 +433,7 @@ class DatabaseManager:
             status=?, provider_session_id=COALESCE(?, provider_session_id),
             session_creation_status=?, session_cleanup_status=CASE
                 WHEN session_cleanup_status='cleaned' THEN 'cleaned' ELSE ? END,
-            answer=?, partial_answer=?, contexts=?, references_json=?, intermediate_event_summary=?,
+            answer=?, partial_answer=?, contexts=?, references_json=?, intermediate_event_summary=?, tool_errors=?,
             completed_signal_received=?, score_eligible=?, error_category=?, error_message=?, completed_at=CURRENT_TIMESTAMP
             WHERE id=?""",
             (
@@ -439,8 +441,8 @@ class DatabaseManager:
                 provider_session_id, creation_status, cleanup_status,
                 result.get("answer"), result.get("partial_answer"),
                 json.dumps(result.get("contexts", [])), json.dumps(result.get("references", [])),
-                json.dumps(result.get("intermediate_event_summary", {})), bool(result.get("completed")),
-                bool(result.get("score_eligible")), error.get("category"), error.get("message"), run_id,
+                json.dumps(result.get("intermediate_event_summary", {})), json.dumps(result.get("tool_errors", [])),
+                bool(result.get("completed")), bool(result.get("score_eligible")), error.get("category"), error.get("message"), run_id,
             ),
         )
         conn.commit(); conn.close()
@@ -463,6 +465,7 @@ class DatabaseManager:
         item["contexts"] = json.loads(item.get("contexts") or "[]")
         item["references"] = json.loads(item.pop("references_json") or "[]")
         item["intermediate_event_summary"] = json.loads(item.get("intermediate_event_summary") or "{}")
+        item["tool_errors"] = json.loads(item.get("tool_errors") or "[]")
         return item
 
     def get_pending_session_cleanup_groups(self) -> List[Dict[str, Any]]:
