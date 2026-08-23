@@ -14,3 +14,10 @@ def test_report_counts_and_snapshot(secure_env):
     assert report["scored_sample_count"] == 2
     assert report["failed_sample_count"] == 1
     assert report["source_snapshot"]["knowledge_base_selection_mode"] == "none"
+
+
+def test_report_preserves_tool_error_diagnostics(secure_env):
+    reports = seed(secure_env)
+    reports.save_report({"task_id":"tool","chat_id":"a","assistant_id":"a","dataset_id":"d","overall_scores":{},"detailed_scores":[{"sample_index":0,"completion_status":"completed","tool_errors":[{"tool_name":"list_knowledge_chunks","message":"knowledge not found","recovered":True,"event_count":1}]}],"evaluation_metadata":{},"rag_provider":"intelliq","rag_connection_id":"c","knowledge_base_ids":[],"source_snapshot":{},"scored_sample_count":1,"failed_sample_count":0,"total_sample_count":1,"success_rate":1})
+    detail = reports.get_report("tool")
+    assert detail["detailed_scores"][0]["tool_errors"][0]["recovered"] is True

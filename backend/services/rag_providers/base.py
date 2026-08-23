@@ -93,6 +93,7 @@ class RagQueryResult:
     contexts: list[str] = field(default_factory=list)
     references: list[dict[str, Any]] = field(default_factory=list)
     intermediate_event_summary: dict[str, int] = field(default_factory=dict)
+    tool_errors: list[dict[str, Any]] = field(default_factory=list)
     error: ProviderError | None = None
     session_creation_status: str = "not_required"
 
@@ -107,6 +108,7 @@ class RagQueryResult:
             "contexts": self.contexts,
             "references": self.references,
             "intermediate_event_summary": self.intermediate_event_summary,
+            "tool_errors": self.tool_errors,
             "error": self.error.to_dict() if self.error else None,
             "session_creation_status": self.session_creation_status,
         }

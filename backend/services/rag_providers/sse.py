@@ -57,12 +57,51 @@ async def iter_sse_events(chunks: AsyncIterable[bytes]):
         yield current
 
 
+def _tool_error_diagnostic(payload: dict[str, Any], message: str) -> dict[str, Any] | None:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    tool_call_id = str(data.get("tool_call_id") or "").strip()
+    tool_name = str(data.get("tool_name") or "").strip()
+    if payload.get("done") is True or not (tool_call_id or tool_name):
+        return None
+    return {
+        "tool_call_id": tool_call_id or None,
+        "tool_name": tool_name or None,
+        "message": message[:500],
+        "recovered": False,
+        "event_count": 1,
+    }
+
+
+def _tool_error_key(diagnostic: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(diagnostic.get("tool_call_id") or diagnostic.get("tool_name") or ""),
+        str(diagnostic.get("message") or ""),
+    )
+
+
 async def aggregate_intelliq_sse(chunks: AsyncIterable[bytes], session_id: str) -> RagQueryResult:
     answer_parts: list[str] = []
     references: list[dict[str, Any]] = []
     seen_refs: set[str] = set()
     event_counts: dict[str, int] = {}
+    tool_errors: list[dict[str, Any]] = []
+    tool_error_indexes: dict[tuple[str, str], int] = {}
     completed = False
+
+    def contexts() -> list[str]:
+        return [str(ref.get("content", "")) for ref in references if ref.get("content")]
+
+    def result_error(category: str, message: str) -> RagQueryResult:
+        return RagQueryResult(
+            provider="intelliq",
+            session_id=session_id,
+            partial_answer="".join(answer_parts),
+            references=references,
+            contexts=contexts(),
+            intermediate_event_summary=event_counts,
+            tool_errors=tool_errors,
+            error=ProviderError(category, message, False),
+        )
 
     try:
         async for _, raw in iter_sse_events(chunks):
@@ -82,52 +121,39 @@ async def aggregate_intelliq_sse(chunks: AsyncIterable[bytes], session_id: str) 
                         references.append(ref)
             elif response_type == "error":
                 message = str(payload.get("content") or payload.get("message") or "IntelliQ 返回错误")
-                return RagQueryResult(
-                    provider="intelliq",
-                    session_id=session_id,
-                    partial_answer="".join(answer_parts),
-                    references=references,
-                    contexts=[str(r.get("content", "")) for r in references if r.get("content")],
-                    intermediate_event_summary=event_counts,
-                    error=ProviderError("upstream", message, False),
-                )
-            if response_type == "answer" and payload.get("done") is True:
+                diagnostic = _tool_error_diagnostic(payload, message)
+                if diagnostic is not None:
+                    key = _tool_error_key(diagnostic)
+                    existing_index = tool_error_indexes.get(key)
+                    if existing_index is None:
+                        tool_error_indexes[key] = len(tool_errors)
+                        tool_errors.append(diagnostic)
+                    else:
+                        tool_errors[existing_index]["event_count"] += 1
+                    continue
+                return result_error("upstream", message)
+            if (response_type == "answer" and payload.get("done") is True) or (
+                response_type == "complete" and payload.get("done") is True
+            ):
                 completed = True
                 break
     except Exception as exc:
-        if isinstance(exc, SSEProtocolError):
-            category = "protocol"
-        else:
-            category = "upstream"
-        return RagQueryResult(
-            provider="intelliq",
-            session_id=session_id,
-            partial_answer="".join(answer_parts),
-            references=references,
-            contexts=[str(r.get("content", "")) for r in references if r.get("content")],
-            intermediate_event_summary=event_counts,
-            error=ProviderError(category, str(exc), False),
-        )
+        category = "protocol" if isinstance(exc, SSEProtocolError) else "upstream"
+        return result_error(category, str(exc))
 
     answer = "".join(answer_parts)
-    contexts = [str(r.get("content", "")) for r in references if r.get("content")]
     if completed and answer:
+        for diagnostic in tool_errors:
+            diagnostic["recovered"] = True
         return RagQueryResult(
             provider="intelliq",
             session_id=session_id,
             completed=True,
             score_eligible=True,
             answer=answer,
-            contexts=contexts,
+            contexts=contexts(),
             references=references,
             intermediate_event_summary=event_counts,
+            tool_errors=tool_errors,
         )
-    return RagQueryResult(
-        provider="intelliq",
-        session_id=session_id,
-        partial_answer=answer,
-        contexts=contexts,
-        references=references,
-        intermediate_event_summary=event_counts,
-        error=ProviderError("protocol", "流在明确完成前结束或最终答案为空", False),
-    )
+    return result_error("protocol", "流在明确完成前结束或最终答案为空")
